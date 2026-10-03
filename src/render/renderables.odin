@@ -1,6 +1,9 @@
 package render
 
 import vk "vendor:vulkan"
+import "vendor:cgltf"
+import "core:log"
+import "core:strings"
 
 MaterialPass :: enum {
     opaque,
@@ -36,6 +39,7 @@ GeometricSurface :: struct {
 }
 
 MeshAsset :: struct {
+    name:           string,
     surfaces:       []GeometricSurface,
     mesh_buffers:   MeshBuffers,
 }
@@ -139,4 +143,108 @@ mesh_destroy :: proc(renderer: ^Renderer, mesh: ^MeshAsset) {
     mesh_buffers_destroy(renderer, &mesh.mesh_buffers)
     delete(mesh.surfaces)
     free(mesh)
+}
+
+mesh_load_gltf :: proc(renderer: ^Renderer, filename: string) -> []^MeshAsset {
+    c_filename := strings.clone_to_cstring(filename)
+    defer delete(c_filename)
+
+    options: cgltf.options = {}
+    data, result := cgltf.parse_file(options, c_filename);
+    if (result != .success) {
+        log.panicf("Failed to load GLTF file %s!", filename)
+    }
+
+    meshes := make([]^MeshAsset, len(data.meshes))
+
+    indices := make([dynamic]u32)
+    vertices := make([dynamic]MeshVertex)
+    defer delete(indices)
+    defer delete(vertices)
+
+    for mesh, m in data.meshes {
+        new_mesh := new(MeshAsset)
+        new_mesh.name = string(mesh.name)
+        new_mesh.surfaces = make([]GeometricSurface, len(mesh.primitives))
+
+        clear(&indices)
+        clear(&vertices)
+
+        // Load the primitive's indices
+        for primitive, p in mesh.primitives {
+            new_surface: GeometricSurface
+            new_surface.start_index = u32(len(indices))
+            new_surface.count = u32(primitive.indices.count)
+
+            first_vertex := len(vertices)
+            reserve(&indices, uint(len(indices)) + primitive.indices.count)
+            for i in 0..<primitive.indices.count {
+                append(&indices, u32(cgltf.accessor_read_index(primitive.indices, i)))
+            }
+
+            // Find the accessors for the other quantities
+            vertexpos_accessor: ^cgltf.accessor = nil
+            normal_accessor:    ^cgltf.accessor = nil
+            uv_accessor:        ^cgltf.accessor = nil
+            color_accessor:     ^cgltf.accessor = nil
+            for attribute, i in primitive.attributes {
+                #partial switch attribute.type {
+                case .position:
+                   vertexpos_accessor = attribute.data
+                case .normal:
+                    normal_accessor = attribute.data
+                case .texcoord:
+                    // There may be multiple sets of uv
+                    if attribute.index == 0 do uv_accessor = attribute.data
+                case .color:
+                    // There may be multiple sets of color
+                    if attribute.index == 0 do color_accessor = attribute.data
+                }
+            }
+
+            // Load vertices
+            reserve(&vertices, uint(len(vertices) + vertexpos_accessor.count))
+            for i in 0..<vertexpos_accessor.count {
+                vertex := MeshVertex{
+                    position = 0,
+                    normal = { 1, 0, 0},
+                    color = 1,
+                    uv_x = 0,
+                    uv_y = 0,
+                }
+                if !cgltf.accessor_read_float(vertexpos_accessor, i, &vertex.position[0], 3) do log.panic("Failed to read vertex pos")
+                append(&vertices, vertex)
+            }
+
+            // Load normals
+            for i in 0..<normal_accessor.count {
+                if !cgltf.accessor_read_float(normal_accessor, i, &vertices[i].normal[0], 3) do log.panic("Failed to read vertex normal")
+            }
+
+            // Load texture coords
+            if uv_accessor != nil {
+                for i in 0..<uv_accessor.count {
+                    uv: float2
+                    if !cgltf.accessor_read_float(uv_accessor, i, &uv[0], 2) do log.panic("Failed to read vertex uv")
+                    vertices[i].uv_x = uv.x
+                    vertices[i].uv_y = uv.y
+                }
+            }
+
+            // Load colors
+            if color_accessor != nil {
+                for i in 0..<color_accessor.count {
+                    if !cgltf.accessor_read_float(uv_accessor, i, &vertices[i].color[0], 4) do log.panic("Failed to read vertex color")
+                }
+            }
+
+            new_mesh.surfaces[p] = new_surface
+        }
+
+        new_mesh.mesh_buffers = mesh_upload_to_GPU(renderer, vertices[:], indices[:])
+        meshes[m] = new_mesh
+    }
+
+    cgltf.free(data);
+    return meshes
 }
