@@ -119,7 +119,7 @@ fluidsim_get_material :: proc(renderer: ^render.Renderer) -> render.MaterialInst
     render.pipeline_cfg_set_polygon_mode(&pipeline_cfg, .FILL)
     render.pipeline_cfg_set_cull_mode(&pipeline_cfg, {}, .CLOCKWISE)
     render.pipeline_cfg_set_multisampling(&pipeline_cfg, { ._1 })
-    render.pipeline_cfg_set_blending(&pipeline_cfg, .ALPHA)
+    render.pipeline_cfg_set_blending(&pipeline_cfg, .NONE)
     render.pipeline_cfg_set_color_attachment_format(&pipeline_cfg, renderer.draw_image.format)
     render.pipeline_cfg_set_depth_attachment_format(&pipeline_cfg, renderer.depth_image.format)
     render.pipeline_cfg_set_depth_test(&pipeline_cfg, .GREATER_OR_EQUAL)
@@ -130,7 +130,7 @@ fluidsim_get_material :: proc(renderer: ^render.Renderer) -> render.MaterialInst
     }
 
     material: render.MaterialInstance
-    material.pass_type = .transparent
+    material.pass_type = .opaque
 
     // Material descriptor set creation
 

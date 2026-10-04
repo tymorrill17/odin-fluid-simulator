@@ -30,17 +30,17 @@ CPUParticleSystem :: struct {
     transform:                      float4x4,
 }
 
-particle_system_get_render_object :: proc(system: ^CPUParticleSystem) -> RenderObject {
-    return RenderObject{
+particle_system_get_render_object :: proc(system: ^CPUParticleSystem, out: ^[dynamic]RenderObject) {
+    append(out, RenderObject{
         index_count             = system.mesh.surfaces[0].count,
         first_index             = system.mesh.surfaces[0].start_index,
         index_buffer            = system.mesh.mesh_buffers.index_buffer.handle,
         material                = system.material,
-        transform               = &system.transform,
+        transform               = system.transform,
         vertex_buffer_addr      = system.mesh.mesh_buffers.vertex_buffer_addr,
-        instance_buffer_addr    = &system.current_particle_buffer_addr,
-        instance_count          = &system.particle_count,
-    }
+        instance_buffer_addr    = system.current_particle_buffer_addr,
+        instance_count          = system.particle_count,
+    })
 }
 
 particle_system_create :: proc(renderer: ^Renderer, max_particles: u32, origin: float3,

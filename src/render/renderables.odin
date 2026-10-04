@@ -4,6 +4,9 @@ import vk "vendor:vulkan"
 import "vendor:cgltf"
 import "core:log"
 import "core:strings"
+import "core:math/linalg"
+
+ASSET_DIR :: #config(ASSET_DIR, ".")
 
 MaterialPass :: enum {
     opaque,
@@ -21,10 +24,10 @@ RenderObject :: struct {
     first_index:            u32,
     index_buffer:           vk.Buffer, // index buffer for the mesh
     material:               ^MaterialInstance,
-    transform:              ^float4x4,
+    transform:              float4x4,
     vertex_buffer_addr:     vk.DeviceAddress,
-    instance_buffer_addr:   ^vk.DeviceAddress, // If we are rendering multiple instances of this object, store the positions here
-    instance_count:         ^u32,              // How many instances are we rendering?
+    instance_buffer_addr:   vk.DeviceAddress,  // If we are rendering multiple instances of this object, store the positions here
+    instance_count:         u32,               // How many instances are we rendering?
 }
 
 MeshBuffers :: struct {
@@ -154,6 +157,11 @@ mesh_load_gltf :: proc(renderer: ^Renderer, filename: string) -> []^MeshAsset {
     if (result != .success) {
         log.panicf("Failed to load GLTF file %s!", filename)
     }
+    defer cgltf.free(data);
+
+    if cgltf.load_buffers(options, data, c_filename) != .success {
+        log.panicf("Failed to load GLTF buffers from %s!", filename)
+    }
 
     meshes := make([]^MeshAsset, len(data.meshes))
 
@@ -176,10 +184,10 @@ mesh_load_gltf :: proc(renderer: ^Renderer, filename: string) -> []^MeshAsset {
             new_surface.start_index = u32(len(indices))
             new_surface.count = u32(primitive.indices.count)
 
-            first_vertex := len(vertices)
+            first_vertex := uint(len(vertices))
             reserve(&indices, uint(len(indices)) + primitive.indices.count)
             for i in 0..<primitive.indices.count {
-                append(&indices, u32(cgltf.accessor_read_index(primitive.indices, i)))
+                append(&indices, u32(cgltf.accessor_read_index(primitive.indices, i)) + u32(first_vertex))
             }
 
             // Find the accessors for the other quantities
@@ -192,7 +200,7 @@ mesh_load_gltf :: proc(renderer: ^Renderer, filename: string) -> []^MeshAsset {
                 case .position:
                    vertexpos_accessor = attribute.data
                 case .normal:
-                    normal_accessor = attribute.data
+                    if attribute.index == 0 do normal_accessor = attribute.data
                 case .texcoord:
                     // There may be multiple sets of uv
                     if attribute.index == 0 do uv_accessor = attribute.data
@@ -217,8 +225,10 @@ mesh_load_gltf :: proc(renderer: ^Renderer, filename: string) -> []^MeshAsset {
             }
 
             // Load normals
-            for i in 0..<normal_accessor.count {
-                if !cgltf.accessor_read_float(normal_accessor, i, &vertices[i].normal[0], 3) do log.panic("Failed to read vertex normal")
+            if normal_accessor != nil {
+                for i in 0..<normal_accessor.count {
+                    if !cgltf.accessor_read_float(normal_accessor, i, &vertices[i + first_vertex].normal[0], 3) do log.panic("Failed to read vertex normal")
+                }
             }
 
             // Load texture coords
@@ -226,15 +236,15 @@ mesh_load_gltf :: proc(renderer: ^Renderer, filename: string) -> []^MeshAsset {
                 for i in 0..<uv_accessor.count {
                     uv: float2
                     if !cgltf.accessor_read_float(uv_accessor, i, &uv[0], 2) do log.panic("Failed to read vertex uv")
-                    vertices[i].uv_x = uv.x
-                    vertices[i].uv_y = uv.y
+                    vertices[i + first_vertex].uv_x = uv.x
+                    vertices[i + first_vertex].uv_y = uv.y
                 }
             }
 
             // Load colors
             if color_accessor != nil {
                 for i in 0..<color_accessor.count {
-                    if !cgltf.accessor_read_float(uv_accessor, i, &vertices[i].color[0], 4) do log.panic("Failed to read vertex color")
+                    if !cgltf.accessor_read_float(color_accessor, i, &vertices[i + first_vertex].color[0], 4) do log.panic("Failed to read vertex color")
                 }
             }
 
@@ -245,6 +255,22 @@ mesh_load_gltf :: proc(renderer: ^Renderer, filename: string) -> []^MeshAsset {
         meshes[m] = new_mesh
     }
 
-    cgltf.free(data);
     return meshes
+}
+
+// Converts MeshAsset to a RenderObject
+// TODO: This just has a single material being passed to it now. This should change. Why not put it in the GeometricSurface?
+mesh_get_render_objects_single_instance :: proc(mesh: ^MeshAsset, out: ^[dynamic]RenderObject, material: ^MaterialInstance, position: float3) {
+    for surface in mesh.surfaces {
+        append(out, RenderObject{
+            index_count = surface.count,
+            first_index = surface.start_index,
+            index_buffer = mesh.mesh_buffers.index_buffer.handle,
+            material = material,
+            transform = linalg.matrix4_translate_f32(position),
+            vertex_buffer_addr = mesh.mesh_buffers.vertex_buffer_addr,
+            instance_count = 1,
+            instance_buffer_addr = 0,
+        })
+    }
 }

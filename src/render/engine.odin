@@ -103,7 +103,7 @@ Renderer :: struct {
     current_render_fence:       ^vk.Fence,
     current_swpch_render_sem:   ^vk.Semaphore,
 
-    renderables:                [dynamic]^RenderObject,
+    renderables:                [dynamic]RenderObject,
     scene_descriptors:          [dynamic]^DescriptorSet,
     scene_descriptor_layouts:   [dynamic]vk.DescriptorSetLayout,
     scene_buffers:              [dynamic]Buffer,
@@ -196,7 +196,7 @@ renderer_initialize :: proc(renderer: ^Renderer, renderer_cfg: RendererConfig) {
     // initialize descriptor allocator
     descriptor_allocator_initialize(renderer, renderer_cfg.initial_descriptor_set_count, pool_size_ratios)
 
-    renderer.renderables                = make([dynamic]^RenderObject)
+    renderer.renderables                = make([dynamic]RenderObject)
     renderer.scene_descriptors          = make([dynamic]^DescriptorSet)
     renderer.scene_descriptor_layouts   = make([dynamic]vk.DescriptorSetLayout)
     renderer.scene_buffers              = make([dynamic]Buffer)
@@ -357,9 +357,9 @@ draw :: proc(renderer: ^Renderer) {
 
     // Sort render objects so minimize pipeline and descriptor rebinds
     // TODO: make this more robust
-    slice.sort_by(renderer.renderables[:], proc(a, b: ^RenderObject) -> bool {
-        if a.material == b.material do return a.index_buffer < b.index_buffer
-        return a.material < b.material
+    slice.sort_by(renderer.renderables[:], proc(a, b: RenderObject) -> bool {
+        if a.material.pipeline.handle == b.material.pipeline.handle do return a.index_buffer < b.index_buffer
+        return a.material.pipeline.handle < b.material.pipeline.handle
     })
 
     last_pipeline: Pipeline
@@ -385,13 +385,13 @@ draw :: proc(renderer: ^Renderer) {
 
         vk.CmdBindIndexBuffer(cmd, render_object.index_buffer, 0, .UINT32)
         push_constants := DrawPushConstants{
-            world_matrix         = render_object.transform^,
+            world_matrix         = render_object.transform,
             vertex_buffer_addr   = render_object.vertex_buffer_addr,
-            instance_buffer_addr = render_object.instance_buffer_addr^,
+            instance_buffer_addr = render_object.instance_buffer_addr,
         }
         // BUG: pushing constants to vertex or fragment shader should be automated by the pipeline's pushconstantrange
         vk.CmdPushConstants(cmd, render_object.material.pipeline.layout, { .VERTEX }, 0, size_of(push_constants), &push_constants)
-        vk.CmdDrawIndexed(cmd, render_object.index_count, render_object.instance_count^, render_object.first_index, 0, 0)
+        vk.CmdDrawIndexed(cmd, render_object.index_count, render_object.instance_count, render_object.first_index, 0, 0)
     }
 
     vk.CmdEndRendering(cmd)

@@ -4,7 +4,7 @@ import "thirdparty:imgui"
 import vk "vendor:vulkan"
 import "render"
 import "core:log"
-import "core:math/linalg"
+import "core:path/filepath"
 
 APPLICATION_WIDTH  :: 1280
 APPLICATION_HEIGHT :: 720
@@ -17,6 +17,43 @@ requested_device_extensions : []cstring : {
     "VK_KHR_swapchain", // Necessary extension to use swapchains
     "VK_GOOGLE_user_type",
     "VK_KHR_present_mode_fifo_latest_ready",
+}
+
+get_test_gltf_material :: proc(renderer: ^render.Renderer) -> render.MaterialInstance {
+    pipeline_cfg := render.pipeline_cfg_create()
+    defer render.pipeline_cfg_destroy(&pipeline_cfg)
+
+    shader := render.shader_module_create_from_file(renderer, "test_gltf.slang.spv")
+    defer render.shader_module_destroy(renderer, shader)
+
+    render.pipeline_cfg_add_shader(&pipeline_cfg, shader, { .VERTEX }, "basic_vertex")
+    render.pipeline_cfg_add_shader(&pipeline_cfg, shader, { .FRAGMENT }, "basic_frag")
+    render.pipeline_cfg_set_input_topology(&pipeline_cfg, .TRIANGLE_LIST)
+    render.pipeline_cfg_set_polygon_mode(&pipeline_cfg, .FILL)
+    render.pipeline_cfg_set_cull_mode(&pipeline_cfg, {}, .CLOCKWISE)
+    render.pipeline_cfg_set_multisampling(&pipeline_cfg, { ._1 })
+    render.pipeline_cfg_set_blending(&pipeline_cfg, .NONE)
+    render.pipeline_cfg_set_color_attachment_format(&pipeline_cfg, renderer.draw_image.format)
+    render.pipeline_cfg_set_depth_attachment_format(&pipeline_cfg, renderer.depth_image.format)
+    render.pipeline_cfg_set_depth_test(&pipeline_cfg, .GREATER_OR_EQUAL)
+    render.pipeline_cfg_add_push_constant_range(&pipeline_cfg, { .VERTEX }, size_of(render.DrawPushConstants))
+
+    for layout in renderer.scene_descriptor_layouts {
+        render.pipeline_cfg_add_descriptor(&pipeline_cfg, layout)
+    }
+
+    material: render.MaterialInstance
+    material.pass_type = .opaque
+
+    // Material descriptor set creation
+
+    // material_descriptor_layout: vk.DescriptorSetLayout
+    // render.pipeline_cfg_add_descriptor(&pipeline_cfg, material_descriptor_layout)
+    // material_descriptor: vk.DescriptorSet
+    // material.descriptor = material_descriptor
+
+    material.pipeline = render.pipeline_cfg_build_pipeline(&pipeline_cfg, renderer)
+    return material
 }
 
 main :: proc() {
@@ -65,10 +102,24 @@ main :: proc() {
     render.descriptor_writer_add_buffers(&descriptor_writer, r.scene_descriptors[0], 0, { global_uniform_buffer }, .UNIFORM_BUFFER_DYNAMIC)
     render.descriptor_writer_update_sets(&descriptor_writer, &r)
 
+    // Create meshes
     particle_mesh := render.mesh_create_rectangle(&r, 1, 1)
     defer render.mesh_destroy(&r, particle_mesh)
     fluid_material := fluidsim_get_material(&r)
     defer render.pipeline_destroy(&r, &fluid_material.pipeline)
+
+    // Load the example gltf files
+    monkey_filepath, _ := filepath.join({render.ASSET_DIR, "monkey.glb"}, context.allocator)
+    defer delete(monkey_filepath)
+    monkey_mesh := render.mesh_load_gltf(&r, monkey_filepath)
+    defer {
+        for mesh in monkey_mesh {
+            render.mesh_destroy(&r, mesh)
+        }
+        delete(monkey_mesh)
+    }
+    monkey_material := get_test_gltf_material(&r)
+    defer render.pipeline_destroy(&r, &monkey_material.pipeline)
 
     particle_config := FluidSimParticleConfig{
         spacing         = 0.05,
@@ -121,12 +172,13 @@ main :: proc() {
     // Dimension of the particle motion is inferred from bounding box dimension
     fluidsim_particle_system.motion = fluidsim_state_create(&fluidsim_particle_system, &particle_config, &physics_config, &bounding_box)
     defer render.particle_system_destroy(&fluidsim_particle_system, &r)
-    fluidsim_render_object := render.particle_system_get_render_object(&fluidsim_particle_system)
-    append(&r.renderables, &fluidsim_render_object)
+
+    monkey_pos := render.float3{ 0, 10, 7}
 
     recording_timer := render.timer_create()
 
     for !render.window_should_close(&r) {
+        clear(&r.renderables) // TODO: As I think about this more, potentially clean this up
         render.start_frame(&r)
         process_renderer_inputs(&r.input_manager, &r)
         process_fluid_sim_inputs(&r.input_manager, &fluidsim_particle_system)
@@ -214,6 +266,13 @@ main :: proc() {
 
         // Update fluidsim particles.
         render.particle_system_update(&fluidsim_particle_system, &r, r.frame_time)
+
+        // Get the renderables
+        render.particle_system_get_render_object(&fluidsim_particle_system, &r.renderables)
+        for mesh in monkey_mesh {
+            render.mesh_get_render_objects_single_instance(mesh, &r.renderables, &monkey_material, monkey_pos)
+        }
+
 
         render.draw(&r)
     }
