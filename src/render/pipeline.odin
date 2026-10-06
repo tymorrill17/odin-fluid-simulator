@@ -4,8 +4,10 @@ import vk "vendor:vulkan"
 import "core:log"
 
 Pipeline :: struct {
-    handle: vk.Pipeline,
-    layout: vk.PipelineLayout,
+    handle:                 vk.Pipeline,
+    layout:                 vk.PipelineLayout,
+    push_constant_stages:   vk.ShaderStageFlags,
+    bind_point:             vk.PipelineBindPoint,
 }
 
 BlendingType :: enum {
@@ -219,7 +221,17 @@ pipeline_cfg_build_pipeline :: proc(config: ^PipelineConfig, renderer: ^Renderer
         log.panic("Failed to create pipeline!")
     }
 
-    return Pipeline{ handle = pipeline_handle, layout = pipeline_layout }
+    new_pipeline := Pipeline{
+        handle      = pipeline_handle,
+        layout      = pipeline_layout,
+        bind_point  = .GRAPHICS
+    }
+
+    for range in config.push_constant_ranges {
+        new_pipeline.push_constant_stages += range.stageFlags
+    }
+
+    return new_pipeline
 }
 
 pipeline_destroy :: proc(renderer: ^Renderer, pipeline: ^Pipeline) {
@@ -246,3 +258,5 @@ pipeline_layout_create :: proc(renderer: ^Renderer, descriptor_layouts: []vk.Des
 
     return pipeline_layout
 }
+
+

@@ -367,9 +367,9 @@ draw :: proc(renderer: ^Renderer) {
     for render_object in renderer.renderables {
         if render_object.material.pipeline != last_pipeline {
             // Then we need to bind the new pipeline
-            vk.CmdBindPipeline(cmd, .GRAPHICS, render_object.material.pipeline.handle)
+            vk.CmdBindPipeline(cmd, render_object.material.pipeline.bind_point, render_object.material.pipeline.handle)
             if (len(renderer.scene_descriptors) > 0) {
-                descriptor_set_bind(cmd, .GRAPHICS, render_object.material.pipeline.layout,
+                descriptor_set_bind(cmd, render_object.material.pipeline.bind_point, render_object.material.pipeline.layout,
                     0, renderer.scene_descriptors[:], renderer.frame_index)
             }
             last_pipeline = render_object.material.pipeline
@@ -377,7 +377,7 @@ draw :: proc(renderer: ^Renderer) {
         if render_object.material != last_material {
             // Then we need to bind the new material descriptors (if they exist)
             if render_object.material.descriptor != nil {
-                descriptor_set_bind(cmd, .GRAPHICS, render_object.material.pipeline.layout,
+                descriptor_set_bind(cmd, render_object.material.pipeline.bind_point, render_object.material.pipeline.layout,
                     0, { render_object.material.descriptor }, renderer.frame_index)
             }
             last_material = render_object.material
@@ -389,8 +389,7 @@ draw :: proc(renderer: ^Renderer) {
             vertex_buffer_addr   = render_object.vertex_buffer_addr,
             instance_buffer_addr = render_object.instance_buffer_addr,
         }
-        // BUG: pushing constants to vertex or fragment shader should be automated by the pipeline's pushconstantrange
-        vk.CmdPushConstants(cmd, render_object.material.pipeline.layout, { .VERTEX }, 0, size_of(push_constants), &push_constants)
+        vk.CmdPushConstants(cmd, render_object.material.pipeline.layout, render_object.material.pipeline.push_constant_stages, 0, size_of(push_constants), &push_constants)
         vk.CmdDrawIndexed(cmd, render_object.index_count, render_object.instance_count, render_object.first_index, 0, 0)
     }
 
