@@ -227,11 +227,39 @@ pipeline_cfg_build_pipeline :: proc(config: ^PipelineConfig, renderer: ^Renderer
         bind_point  = .GRAPHICS
     }
 
+    stages: vk.ShaderStageFlags
     for range in config.push_constant_ranges {
-        new_pipeline.push_constant_stages += range.stageFlags
+        stages += range.stageFlags
     }
 
-    return new_pipeline
+    return Pipeline{
+        handle               = pipeline_handle,
+        layout               = pipeline_layout,
+        bind_point           = .GRAPHICS,
+        push_constant_stages = stages,
+    }
+}
+
+pipeline_cfg_build_compute_pipeline :: proc(config: ^PipelineConfig, renderer: ^Renderer) -> Pipeline {
+    pipeline_layout := pipeline_layout_create(renderer, config.descriptor_layouts[:], config.push_constant_ranges[:])
+
+    pipeline_info := vk.ComputePipelineCreateInfo{
+        sType   = .COMPUTE_PIPELINE_CREATE_INFO,
+        stage   = config.shader_modules[0], // TODO: @Cleanup there should be a better way to do this. Compute pipelines should have a single shader only
+        layout  = pipeline_layout,
+    }
+
+    pipeline_handle: vk.Pipeline
+    if vk.CreateComputePipelines(renderer.logical_device, NULL_HANDLE, 1, &pipeline_info, nil, &pipeline_handle) != .SUCCESS {
+        log.panic("Failed to create compute pipeline!")
+    }
+
+    return Pipeline{
+        handle               = pipeline_handle,
+        layout               = pipeline_layout,
+        bind_point           = .COMPUTE,
+        push_constant_stages = len(config.push_constant_ranges) > 0 ? { .COMPUTE } : {},
+    }
 }
 
 pipeline_destroy :: proc(renderer: ^Renderer, pipeline: ^Pipeline) {

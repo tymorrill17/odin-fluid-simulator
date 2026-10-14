@@ -17,7 +17,7 @@ DescriptorDynamicBinding :: struct {
 }
 
 DescriptorSet :: struct {
-    handle:                vk.DescriptorSet,
+    handle:             vk.DescriptorSet,
     dynamic_bindings:   [dynamic]DescriptorDynamicBinding,
 }
 

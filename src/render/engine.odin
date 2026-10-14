@@ -27,6 +27,7 @@ pool_sizes := []PoolSizeRatio {
     {vk.DescriptorType.UNIFORM_BUFFER,         100},
     {vk.DescriptorType.UNIFORM_BUFFER_DYNAMIC, 100},
     {vk.DescriptorType.STORAGE_BUFFER,         100},
+    {vk.DescriptorType.STORAGE_IMAGE,          100},
     {vk.DescriptorType.COMBINED_IMAGE_SAMPLER, 100},
 };
 
@@ -378,7 +379,7 @@ draw :: proc(renderer: ^Renderer) {
             // Then we need to bind the new material descriptors (if they exist)
             if render_object.material.descriptor != nil {
                 descriptor_set_bind(cmd, render_object.material.pipeline.bind_point, render_object.material.pipeline.layout,
-                    0, { render_object.material.descriptor }, renderer.frame_index)
+                    u32(len(renderer.scene_descriptors)), { render_object.material.descriptor }, renderer.frame_index)
             }
             last_material = render_object.material
         }
