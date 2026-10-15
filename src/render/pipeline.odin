@@ -243,9 +243,13 @@ pipeline_cfg_build_pipeline :: proc(config: ^PipelineConfig, renderer: ^Renderer
 pipeline_cfg_build_compute_pipeline :: proc(config: ^PipelineConfig, renderer: ^Renderer) -> Pipeline {
     pipeline_layout := pipeline_layout_create(renderer, config.descriptor_layouts[:], config.push_constant_ranges[:])
 
+    if len(config.shader_modules) > 1 {
+        log.debug("Warning: You are trying to build a compute pipeline with more than one shader module! Only the first shader module will be used.")
+    }
+
     pipeline_info := vk.ComputePipelineCreateInfo{
         sType   = .COMPUTE_PIPELINE_CREATE_INFO,
-        stage   = config.shader_modules[0], // TODO: @Cleanup there should be a better way to do this. Compute pipelines should have a single shader only
+        stage   = config.shader_modules[0],
         layout  = pipeline_layout,
     }
 

@@ -23,14 +23,6 @@ VulkanLibrary :: struct {
 glob_ctx: runtime.Context
 glob_vk_lib: VulkanLibrary
 
-pool_sizes := []PoolSizeRatio {
-    {vk.DescriptorType.UNIFORM_BUFFER,         100},
-    {vk.DescriptorType.UNIFORM_BUFFER_DYNAMIC, 100},
-    {vk.DescriptorType.STORAGE_BUFFER,         100},
-    {vk.DescriptorType.STORAGE_IMAGE,          100},
-    {vk.DescriptorType.COMBINED_IMAGE_SAMPLER, 100},
-};
-
 device_features: vk.PhysicalDeviceFeatures
 device_features_11 := vk.PhysicalDeviceVulkan11Features{ sType = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
     shaderDrawParameters = true,
@@ -54,6 +46,7 @@ pool_size_ratios :: []PoolSizeRatio{
     {vk.DescriptorType.UNIFORM_BUFFER,         100},
     {vk.DescriptorType.UNIFORM_BUFFER_DYNAMIC, 100},
     {vk.DescriptorType.STORAGE_BUFFER,         100},
+    {vk.DescriptorType.STORAGE_IMAGE,          100},
     {vk.DescriptorType.COMBINED_IMAGE_SAMPLER, 100},
 };
 
@@ -105,6 +98,7 @@ Renderer :: struct {
     current_swpch_render_sem:   ^vk.Semaphore,
 
     renderables:                [dynamic]RenderObject,
+    compute_passes:             [dynamic]ComputePass,
     scene_descriptors:          [dynamic]^DescriptorSet,
     scene_descriptor_layouts:   [dynamic]vk.DescriptorSetLayout,
     scene_buffers:              [dynamic]Buffer,
@@ -115,6 +109,7 @@ Renderer :: struct {
 
     render_scale:               f32,
     draw_gui:                   bool,
+    clear_draw_image:           bool,
 
     capturing_primed:           bool,
     recorder:                   Recorder,
@@ -171,7 +166,8 @@ renderer_initialize :: proc(renderer: ^Renderer, renderer_cfg: RendererConfig) {
     // Create the draw and depth images
     render_extent := vk.Extent3D{ u32(renderer.window.draw_extent.x), u32(renderer.window.draw_extent.y), 1}
     renderer.draw_image = image_create_device(renderer, render_extent, renderer.swapchain.image_format,
-        { .TRANSFER_SRC, .TRANSFER_DST, .COLOR_ATTACHMENT })
+        { .TRANSFER_SRC, .TRANSFER_DST, .COLOR_ATTACHMENT, .STORAGE })
+        // { .TRANSFER_SRC, .TRANSFER_DST, .COLOR_ATTACHMENT })
     renderer.depth_image = image_create_device(renderer, render_extent, .D32_SFLOAT, { .DEPTH_STENCIL_ATTACHMENT })
 
     command_pool_initialize(renderer)
@@ -198,6 +194,7 @@ renderer_initialize :: proc(renderer: ^Renderer, renderer_cfg: RendererConfig) {
     descriptor_allocator_initialize(renderer, renderer_cfg.initial_descriptor_set_count, pool_size_ratios)
 
     renderer.renderables                = make([dynamic]RenderObject)
+    renderer.compute_passes             = make([dynamic]ComputePass)
     renderer.scene_descriptors          = make([dynamic]^DescriptorSet)
     renderer.scene_descriptor_layouts   = make([dynamic]vk.DescriptorSetLayout)
     renderer.scene_buffers              = make([dynamic]Buffer)
@@ -220,6 +217,7 @@ renderer_initialize :: proc(renderer: ^Renderer, renderer_cfg: RendererConfig) {
     // initialize the debug gui
     gui_initialize(renderer)
     renderer.draw_gui = true
+    renderer.clear_draw_image = true
 }
 
 renderer_shutdown :: proc(renderer: ^Renderer) {
@@ -233,6 +231,7 @@ renderer_shutdown :: proc(renderer: ^Renderer) {
     delete(renderer.scene_descriptor_layouts)
     delete(renderer.scene_descriptors)
     delete(renderer.renderables)
+    delete(renderer.compute_passes)
 
     descriptor_allocator_destroy(renderer)
 
@@ -324,10 +323,14 @@ draw :: proc(renderer: ^Renderer) {
     image_transition(cmd, &renderer.draw_image, .GENERAL)
     image_transition(cmd, &renderer.depth_image, .GENERAL)
 
+    for pass in renderer.compute_passes {
+        pass.dispatch(cmd, renderer, pass.data)
+    }
+
     clear_value := vk.ClearValue{
         color = vk.ClearColorValue{ float32 = {0, 0, 0, 1 } },
     }
-    color_attachment := color_attachment_info_struct(renderer.draw_image, &clear_value)
+    color_attachment := color_attachment_info_struct(renderer.draw_image, renderer.clear_draw_image ? &clear_value : nil)
     depth_attachment := depth_attachment_info_struct(renderer.depth_image)
 
     draw_extent := vk.Extent2D{
