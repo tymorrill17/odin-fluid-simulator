@@ -5,9 +5,51 @@ import vk "vendor:vulkan"
 import "render"
 import "core:log"
 import "core:path/filepath"
+import "core:time"
 
 APPLICATION_WIDTH  :: 1280
 APPLICATION_HEIGHT :: 720
+
+// Defaults used on first run, or after deleting the settings file in the cache dir
+DEFAULT_PARTICLE_CONFIG :: FluidSimParticleConfig{
+    spacing         = 0.05,
+    radius          = 0.08,
+    n_particles     = 15000,
+    default_color   = { 1, 1, 1, 1 },
+}
+
+DEFAULT_PHYSICS_CONFIG :: FluidSimPhysicsConfig{
+    gravity                     = 9.8,
+    boundary_damping            = 0.95,
+    density_smoothing_radius    = 0.35,
+    pressure_constant           = 500,
+    near_pressure_multiplier    = 2,
+    viscosity                   = 5,
+    rest_density                = 250,
+    n_substeps                  = 3,
+    time_step                   = 1.0 / 60.0,
+    max_time_step               = .25,
+    // interaction_strength        = 90,
+    // interaction_radius          = 2,
+}
+
+DEFAULT_BOUNDARY_CONFIG :: BoundaryConfig{
+    width   = 5.5,
+    height  = 5,
+    depth   = 5.5,
+}
+
+DEFAULT_CAMERA_CONFIG :: render.CameraConfig{
+    near_plane  = 0.1,
+    far_plane   = 10000,
+    ortho_scale = 10,
+    fov         = 70,
+}
+
+DEFAULT_CAMERA_CONTROL_CONFIG :: render.CameraControlConfig{
+    move_speed          = 5,
+    look_sensitivity    = 0.003,
+}
 
 requested_validation_layers : []cstring : {
     "VK_LAYER_KHRONOS_validation", // Standard validation layer preset
@@ -169,52 +211,32 @@ main :: proc() {
     monkey_material := get_test_gltf_material(&r)
     defer render.pipeline_destroy(&r, &monkey_material.pipeline)
 
-    particle_config := FluidSimParticleConfig{
-        spacing         = 0.05,
-        radius          = 0.08,
-        n_particles     = 15000,
-        default_color   = { 1, 1, 1, 1 },
-    }
+    particle_config       := DEFAULT_PARTICLE_CONFIG
+    physics_config        := DEFAULT_PHYSICS_CONFIG
+    boundary_config       := DEFAULT_BOUNDARY_CONFIG
+    camera_config         := DEFAULT_CAMERA_CONFIG
+    camera_control_config := DEFAULT_CAMERA_CONTROL_CONFIG
 
-    physics_config := FluidSimPhysicsConfig{
-        gravity                     = 9.8,
-        boundary_damping            = 0.95,
-        density_smoothing_radius    = 0.35,
-        pressure_constant           = 500,
-        near_pressure_multiplier    = 2,
-        viscosity                   = 5,
-        rest_density                = 250,
-        n_substeps                  = 3,
-        time_step                   = 1.0 / 60.0,
-        max_time_step               = .25,
-        // interaction_strength        = 90,
-        // interaction_radius          = 2,
+    config_sections := []render.ConfigSection{
+        render.config_section("particle",        &particle_config),
+        render.config_section("physics",         &physics_config),
+        render.config_section("boundary",        &boundary_config),
+        render.config_section("camera",          &camera_config),
+        render.config_section("camera_controls", &camera_control_config),
     }
-
-    camera_config := render.CameraConfig{
-        near_plane  = 0.1,
-        far_plane   = 10000,
-        ortho_scale = 10,
-        fov         = 70,
-    };
+    render.config_load(config_sections)
+    defer render.config_save(config_sections)
+    last_config_save := time.tick_now()
 
     camera_controller := render.camera_controller_create()
     camera_controller.position = {0, 0, 7}
-    camera_controller.move_speed = 5
-    camera_controller.look_sensitivity = 0.003 // radians per pixel
+    camera_controller.move_speed = camera_control_config.move_speed
+    camera_controller.look_sensitivity = camera_control_config.look_sensitivity
     camera_controller.orbit_distance = 7
 
-    boundary_width: f32 = 5.5
-    boundary_height: f32 = 5
-    boundary_depth: f32 = 5.5
-    half_width := boundary_width * 0.5
-    half_height := boundary_height * 0.5
-    half_depth := boundary_depth * 0.5
-
-    bounding_box := BoundingBox3D{
-        min = { -half_width, -half_height, -half_depth },
-        max = {  half_width,  half_height,  half_depth },
-    }
+    bounding_box: BoundingBox3D
+    bounding_box.max = { boundary_config.width, boundary_config.height, boundary_config.depth } * 0.5
+    bounding_box.min = -bounding_box.max
 
     fluidsim_particle_system := render.particle_system_create(&r, MAX_PARTICLES, (0), particle_mesh, &fluid_material)
     // Dimension of the particle motion is inferred from bounding box dimension
@@ -283,9 +305,9 @@ main :: proc() {
             }
 
             if imgui.CollapsingHeader("Boundary") {
-                imgui.DragFloat("Width", &boundary_width, 0.2)
-                imgui.DragFloat("Height", &boundary_height, 0.2)
-                imgui.DragFloat("Depth", &boundary_depth, 0.2)
+                imgui.DragFloat("Width", &boundary_config.width, 0.2)
+                imgui.DragFloat("Height", &boundary_config.height, 0.2)
+                imgui.DragFloat("Depth", &boundary_config.depth, 0.2)
             }
 
             if imgui.CollapsingHeader("Camera") {
@@ -293,8 +315,8 @@ main :: proc() {
                 imgui.DragFloat("Near Plane", &camera_config.near_plane, 0.001);
                 imgui.DragFloat("Orthographic Scale", &camera_config.ortho_scale, 0.1);
                 imgui.DragFloat("FOV", &camera_config.fov, 1);
-                imgui.DragFloat("Move Speed", &camera_controller.move_speed, 0.1);
-                imgui.DragFloat("Look Sensitivity", &camera_controller.look_sensitivity, 0.0001);
+                imgui.DragFloat("Move Speed", &camera_control_config.move_speed, 0.1);
+                imgui.DragFloat("Look Sensitivity", &camera_control_config.look_sensitivity, 0.0001);
             }
 
             if imgui.CollapsingHeader("Screen Capture") {
@@ -315,8 +337,16 @@ main :: proc() {
 
         // Kept outside the UI so they run even when a section is collapsed
         if !r.recorder.recording do render.timer_update(&recording_timer)
-        bounding_box.max = { boundary_width, boundary_height, boundary_depth } * 0.5
+        bounding_box.max = { boundary_config.width, boundary_config.height, boundary_config.depth } * 0.5
         bounding_box.min = -bounding_box.max
+        camera_controller.move_speed = camera_control_config.move_speed
+        camera_controller.look_sensitivity = camera_control_config.look_sensitivity
+
+        // Auto-save settings
+        if time.tick_since(last_config_save) > time.Second {
+            render.config_save(config_sections)
+            last_config_save = time.tick_now()
+        }
 
         aspect_ratio := r.window.aspect_ratio
         up := render.float3{ 0, 1, 0 }

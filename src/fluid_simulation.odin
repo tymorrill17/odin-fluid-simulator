@@ -102,6 +102,12 @@ BoundingBox :: struct($N: int) {
     max: [N]f32,
 }
 
+BoundaryConfig :: struct {
+    width:  f32,
+    height: f32,
+    depth:  f32,
+}
+
 BoundingBox2D :: BoundingBox(2)
 BoundingBox3D :: BoundingBox(3)
 

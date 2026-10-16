@@ -3,6 +3,11 @@ package render
 import "core:math"
 import "core:math/linalg"
 
+CameraControlConfig :: struct {
+    move_speed:         f32,
+    look_sensitivity:   f32, // radians per pixel
+}
+
 CameraConfig :: struct{
     near_plane:     f32,
     far_plane:      f32,

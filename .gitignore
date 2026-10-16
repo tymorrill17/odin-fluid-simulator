@@ -3,7 +3,7 @@ bin/*
 thirdparty/
 captures/
 ols.json
-imgui.ini
+.cache/
 run
 *.cap
 
