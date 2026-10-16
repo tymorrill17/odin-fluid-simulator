@@ -253,78 +253,70 @@ main :: proc() {
         process_fluid_sim_inputs(&r.input_manager, &fluidsim_particle_system)
         process_camera_inputs(&r.input_manager, &camera_controller)
 
-		imgui.Begin("Camera Config");
-        imgui.DragFloat("Far Plane", &camera_config.far_plane, 1);
-        imgui.DragFloat("Near Plane", &camera_config.near_plane, 0.001);
-        imgui.DragFloat("Orthographic Scale", &camera_config.ortho_scale, 0.1);
-        imgui.DragFloat("FOV", &camera_config.fov, 1);
-        imgui.DragFloat("Move Speed", &camera_controller.move_speed, 0.1);
-        imgui.DragFloat("Look Sensitivity", &camera_controller.look_sensitivity, 0.0001);
-		imgui.End();
+        imgui.SetNextWindowPos({ 10, 10 }, .FirstUseEver)
+        imgui.SetNextWindowSize({ 380, 700 }, .FirstUseEver)
+        if imgui.Begin("Fluid Simulator") {
+            imgui.Text("FPS: %f", r.timer.fps)
+            imgui.Text("Frame Time: %f", r.timer.avg_frame_time)
+            if imgui.Button("Start") do fluidsim_particle_system.motion.started = true
+            imgui.SameLine()
+            if imgui.Button("Reset") do fluidsim_particle_system.motion.started = false
 
-		imgui.Begin("Particle Config");
-        imgui.DragFloat("Spacing", &particle_config.spacing, 0.01);
-        imgui.DragFloat("Radius", &particle_config.radius, .01);
-        imgui.DragScalar("Number of Particles", .U32, rawptr(&particle_config.n_particles), 1);
-        imgui.ColorPicker4("Default Color", &particle_config.default_color)
-		imgui.End();
+            if imgui.CollapsingHeader("Physics") {
+                imgui.DragFloat("Gravity", &physics_config.gravity, 0.01);
+                imgui.DragFloat("Boundary Damping Factor", &physics_config.boundary_damping, 0.01);
+                imgui.DragFloat("Smoothing Radius", &physics_config.density_smoothing_radius, 0.01, v_min = 0.1);
+                imgui.DragFloat("Pressure Constant", &physics_config.pressure_constant, 0.01);
+                imgui.DragFloat("Near Pressure Multiplier", &physics_config.near_pressure_multiplier, 0.01);
+                imgui.DragFloat("Viscosity", &physics_config.viscosity, 0.01);
+                imgui.DragFloat("Rest Density", &physics_config.rest_density, 0.01);
+                imgui.DragFloat("Time Step", &physics_config.time_step, .0166, v_min = 0);
+                min: u32 = 1
+                imgui.DragScalar("Substeps", .U32, rawptr(&physics_config.n_substeps), 1, &min);
+            }
 
-		imgui.Begin("Physics Config");
-        imgui.DragFloat("Gravity", &physics_config.gravity, 0.01);
-        imgui.DragFloat("Boundary Damping Factor", &physics_config.boundary_damping, 0.01);
-        imgui.DragFloat("Smoothing Radius", &physics_config.density_smoothing_radius, 0.01, v_min = 0.1);
-        imgui.DragFloat("Pressure Constant", &physics_config.pressure_constant, 0.01);
-        imgui.DragFloat("Near Pressure Multiplier", &physics_config.near_pressure_multiplier, 0.01);
-        imgui.DragFloat("Viscosity", &physics_config.viscosity, 0.01);
-        imgui.DragFloat("Rest Density", &physics_config.rest_density, 0.01);
-        imgui.DragFloat("Time Step", &physics_config.time_step, .0166, v_min = 0);
-        // imgui.DragFloat("Interaction Strength", &physics_config.interaction_strength, 0.1);
-        // imgui.DragFloat("Interaction Radius", &physics_config.interaction_radius, 0.01, v_min = 0);
-        {
-            min: u32 = 1
-            imgui.DragScalar("Substeps", .U32, rawptr(&physics_config.n_substeps), 1, &min);
+            if imgui.CollapsingHeader("Particles") {
+                imgui.DragFloat("Spacing", &particle_config.spacing, 0.01);
+                imgui.DragFloat("Radius", &particle_config.radius, .01);
+                imgui.DragScalar("Number of Particles", .U32, rawptr(&particle_config.n_particles), 1);
+                imgui.ColorPicker4("Default Color", &particle_config.default_color)
+            }
+
+            if imgui.CollapsingHeader("Boundary") {
+                imgui.DragFloat("Width", &boundary_width, 0.2)
+                imgui.DragFloat("Height", &boundary_height, 0.2)
+                imgui.DragFloat("Depth", &boundary_depth, 0.2)
+            }
+
+            if imgui.CollapsingHeader("Camera") {
+                imgui.DragFloat("Far Plane", &camera_config.far_plane, 1);
+                imgui.DragFloat("Near Plane", &camera_config.near_plane, 0.001);
+                imgui.DragFloat("Orthographic Scale", &camera_config.ortho_scale, 0.1);
+                imgui.DragFloat("FOV", &camera_config.fov, 1);
+                imgui.DragFloat("Move Speed", &camera_controller.move_speed, 0.1);
+                imgui.DragFloat("Look Sensitivity", &camera_controller.look_sensitivity, 0.0001);
+            }
+
+            if imgui.CollapsingHeader("Screen Capture") {
+                if imgui.Button(r.capturing_primed ? "Stand Down" : "Prime") do r.capturing_primed = !r.capturing_primed
+                imgui.SameLine()
+                if imgui.Button("Take Screenshot") do render.capture_request_screenshot(&r)
+                if !r.recorder.recording {
+                    imgui.InputScalar("Framerate", .S32, &r.recorder.framerate)
+                    if imgui.Button("Start Recording") do render.capture_start_recording(&r)
+                } else {
+                    if imgui.Button("Stop Recording") do render.capture_end_recording(&r)
+                    imgui.Text("Elapsed Time: %f", render.timer_time_since_last_tick(recording_timer))
+                }
+                imgui.DragInt("Quality", &render.g_ffmpeg_quality, 0, 100, 1)
+            }
         }
-		imgui.End();
-
-        imgui.Begin("Boundary")
-        imgui.DragFloat("Width", &boundary_width, 0.2)
-        imgui.DragFloat("Height", &boundary_height, 0.2)
-        imgui.DragFloat("Depth", &boundary_depth, 0.2)
-        bounding_box.max.x = boundary_width * 0.5
-        bounding_box.max.y = boundary_height * 0.5
-        bounding_box.max.z = boundary_depth * 0.5
-        bounding_box.min.x = -bounding_box.max.x
-        bounding_box.min.y = -bounding_box.max.y
-        bounding_box.min.z = -bounding_box.max.z
-        imgui.End();
-
-		imgui.Begin("Controls");
-        if imgui.Button("Start") {
-            fluidsim_particle_system.motion.started = true
-        }
-        if imgui.Button("Reset") {
-            fluidsim_particle_system.motion.started = false
-        }
-		imgui.End();
-
-		imgui.Begin("Metrics");
-        imgui.Text("FPS: %f", r.timer.fps)
-        imgui.Text("Frame Time: %f", r.timer.avg_frame_time)
-		imgui.End();
-
-        imgui.Begin("Screen Capture")
-        if imgui.Button(r.capturing_primed ? "Stand Down" : "Prime") do r.capturing_primed = r.capturing_primed ? false : true
-        if imgui.Button("Take Screenshot") do render.capture_request_screenshot(&r)
-        if !r.recorder.recording {
-            imgui.InputScalar("Framerate", .S32, &r.recorder.framerate)
-            if imgui.Button("Start Recording") do render.capture_start_recording(&r)
-            render.timer_update(&recording_timer)
-        } else {
-            if imgui.Button("Stop Recording") do render.capture_end_recording(&r)
-            imgui.Text("Elapsed Time: %f", render.timer_time_since_last_tick(recording_timer))
-        }
-        imgui.DragInt("Quality", &render.g_ffmpeg_quality, 0, 100, 1)
         imgui.End()
+
+        // Kept outside the UI so they run even when a section is collapsed
+        if !r.recorder.recording do render.timer_update(&recording_timer)
+        bounding_box.max = { boundary_width, boundary_height, boundary_depth } * 0.5
+        bounding_box.min = -bounding_box.max
 
         aspect_ratio := r.window.aspect_ratio
         up := render.float3{ 0, 1, 0 }
