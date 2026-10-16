@@ -23,6 +23,7 @@ EXTRA_LINKER_FLAGS  = "-lstdc++"    # input to odin's "extra-linker-flags" build
 # Shader Config
 SHADER_COMPILER     = "slangc"      # which shader compiler to use
 SHADER_BIN_DIR      = "spirv"
+SHADER_MODULE_DIR   = "modules"     # shader modules (no entry points), imported by other shaders
 SHADER_SRC_EXT      = ".slang"
 SHADER_TARGET       = "spirv"
 SHADER_PROFILE      = "spirv_1_6"
@@ -34,6 +35,7 @@ OPTIONAL_TOOLS      = { "ffmpeg": "video recording" }
 PROJECT_DIR         = Path(__file__).resolve().parent # Get the project root
 
 shader_path         = PROJECT_DIR / SHADER_DIR
+shader_module_path  = shader_path / SHADER_MODULE_DIR
 bin_path            = PROJECT_DIR / BIN_DIR
 shader_bin_path     = bin_path / SHADER_BIN_DIR
 exe_path            = bin_path / (EXE_NAME if platform.system() != "Windows" else EXE_NAME + ".exe")
@@ -92,12 +94,19 @@ def compile_shaders(debug):
         print(f"error: could not find '{SHADER_COMPILER}' in PATH.")
         sys.exit(-1)
 
+    # Any module change may affect any shader, so treat the newest module as a dependency of every shader
+    newest_module_time = max((module.stat().st_mtime for module in shader_module_path.rglob(f"*{SHADER_SRC_EXT}")), default=0)
+
     # sort found shaders so they compile in the same order each time
     for shader_src in sorted(shader_path.rglob(f"*{SHADER_SRC_EXT}")):
+        # Modules are compiled into the shaders that import them, not on their own
+        if shader_module_path in shader_src.parents:
+            continue
+
         shader_out = shader_bin_path / (shader_src.name + ".spv")
 
-        # Skip recompiling if the output is newer than the source
-        if shader_out.exists() and shader_out.stat().st_mtime >= shader_src.stat().st_mtime:
+        # Skip recompiling if the output is newer than the source and every module
+        if shader_out.exists() and shader_out.stat().st_mtime >= max(shader_src.stat().st_mtime, newest_module_time):
             continue
 
         cmd = [
@@ -105,6 +114,7 @@ def compile_shaders(debug):
             str(shader_src),
             "-target", SHADER_TARGET,
             "-profile", SHADER_PROFILE,
+            "-I", str(shader_module_path),
         ]
         # Note, make sure to clean between release and debug builds since not all shaders may be compiled
         if debug:
@@ -175,6 +185,8 @@ def main() -> int:
 
     if not shader_path.exists():
         shader_path.mkdir()
+    if not shader_module_path.exists():
+        shader_module_path.mkdir()
     if not bin_path.exists():
         bin_path.mkdir()
     if not thirdparty_path.exists():

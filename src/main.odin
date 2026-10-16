@@ -56,21 +56,23 @@ get_test_gltf_material :: proc(renderer: ^render.Renderer) -> render.MaterialIns
     return material
 }
 
-get_gradient_compute_pipeline :: proc(renderer: ^render.Renderer, background_texture_layout: vk.DescriptorSetLayout,
-    background_texture_descriptor: ^render.DescriptorSet) -> render.ComputeResources {
+get_gradient_compute_pipeline :: proc(renderer: ^render.Renderer, descriptor_layouts: []vk.DescriptorSetLayout,
+    descriptor_sets: []^render.DescriptorSet) -> render.ComputeResources {
 
     pipeline_cfg := render.pipeline_cfg_create()
     defer render.pipeline_cfg_destroy(&pipeline_cfg)
 
-    shader := render.shader_module_create_from_file(renderer, "gradient.slang.spv")
+    shader := render.shader_module_create_from_file(renderer, "sky.slang.spv")
     defer render.shader_module_destroy(renderer, shader)
 
-    render.pipeline_cfg_add_shader(&pipeline_cfg, shader, { .COMPUTE }, "gradient")
-    render.pipeline_cfg_add_descriptor(&pipeline_cfg, background_texture_layout)
+    render.pipeline_cfg_add_shader(&pipeline_cfg, shader, { .COMPUTE }, "sky_gradient")
+    for layout in descriptor_layouts {
+        render.pipeline_cfg_add_descriptor(&pipeline_cfg, layout)
+    }
     render.pipeline_cfg_add_push_constant_range(&pipeline_cfg, { .COMPUTE }, size_of(GradientPushConstants))
 
     pipeline := render.pipeline_cfg_build_compute_pipeline(&pipeline_cfg, renderer)
-    return render.compute_resources_create(pipeline, { background_texture_descriptor })
+    return render.compute_resources_create(pipeline, descriptor_sets)
 }
 
 GradientData :: struct {
@@ -138,7 +140,7 @@ main :: proc() {
     defer render.descriptor_writer_destroy(&descriptor_writer)
 
     // Build the descriptor layout for the global scene descriptors (like camera data, etc)
-    render.descriptor_layout_builder_add_binding(&layout_builder, 0, .UNIFORM_BUFFER_DYNAMIC, 1, { .VERTEX })
+    render.descriptor_layout_builder_add_binding(&layout_builder, 0, .UNIFORM_BUFFER_DYNAMIC, 1, { .VERTEX, .COMPUTE })
     global_scene_layout := render.descriptor_layout_builder_build(&layout_builder, &r)
     append(&r.scene_descriptor_layouts, global_scene_layout)
     camera_descriptor := render.descriptor_set_create(&r, { global_scene_layout })
@@ -230,7 +232,7 @@ main :: proc() {
     render.descriptor_writer_add_images(&descriptor_writer, background_texture_set.handle, 0, { background_texture }, .STORAGE_IMAGE)
     render.descriptor_writer_update_sets(&descriptor_writer, &r)
 
-    gradient_resources := get_gradient_compute_pipeline(&r, background_texture_desc_layout, &background_texture_set)
+    gradient_resources := get_gradient_compute_pipeline(&r, { global_scene_layout, background_texture_desc_layout }, { &camera_descriptor, &background_texture_set })
     gradient_data := GradientData{
         resources = &gradient_resources,
         background_texture = &background_texture,
