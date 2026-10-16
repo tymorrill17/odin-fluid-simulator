@@ -4,6 +4,7 @@ import "thirdparty:imgui"
 import vk "vendor:vulkan"
 import "render"
 import "core:log"
+import "core:math"
 import "core:path/filepath"
 import "core:time"
 
@@ -61,7 +62,7 @@ requested_device_extensions : []cstring : {
     "VK_KHR_present_mode_fifo_latest_ready",
 }
 
-get_test_gltf_material :: proc(renderer: ^render.Renderer) -> render.MaterialInstance {
+get_test_gltf_material :: proc(renderer: ^render.Renderer, descriptor_layout: vk.DescriptorSetLayout, descriptor: ^render.DescriptorSet) -> render.MaterialInstance {
     pipeline_cfg := render.pipeline_cfg_create()
     defer render.pipeline_cfg_destroy(&pipeline_cfg)
 
@@ -88,11 +89,8 @@ get_test_gltf_material :: proc(renderer: ^render.Renderer) -> render.MaterialIns
     material.pass_type = .opaque
 
     // Material descriptor set creation
-
-    // material_descriptor_layout: vk.DescriptorSetLayout
-    // render.pipeline_cfg_add_descriptor(&pipeline_cfg, material_descriptor_layout)
-    // material_descriptor: vk.DescriptorSet
-    // material.descriptor = material_descriptor
+    render.pipeline_cfg_add_descriptor(&pipeline_cfg, descriptor_layout)
+    material.descriptor = descriptor
 
     material.pipeline = render.pipeline_cfg_build_pipeline(&pipeline_cfg, renderer)
     return material
@@ -208,8 +206,6 @@ main :: proc() {
         }
         delete(monkey_mesh)
     }
-    monkey_material := get_test_gltf_material(&r)
-    defer render.pipeline_destroy(&r, &monkey_material.pipeline)
 
     particle_config       := DEFAULT_PARTICLE_CONFIG
     physics_config        := DEFAULT_PHYSICS_CONFIG
@@ -244,7 +240,7 @@ main :: proc() {
     defer render.particle_system_destroy(&fluidsim_particle_system, &r)
 
     // Create the background texture that the gradient compute shader will write to
-    background_texture := render.image_create_texture(&r, r.draw_image.extent, .R16G16B16A16_SFLOAT, { .TRANSFER_SRC, .COLOR_ATTACHMENT, .STORAGE})
+    background_texture := render.image_create_device(&r, r.draw_image.extent, .R16G16B16A16_SFLOAT, { .TRANSFER_SRC, .COLOR_ATTACHMENT, .STORAGE})
     defer render.image_destroy(&r, &background_texture)
     render.image_transition_now(&r, &background_texture, .GENERAL)
     render.descriptor_layout_builder_add_binding(&layout_builder, 0, .STORAGE_IMAGE, 1, { .COMPUTE })
@@ -260,11 +256,67 @@ main :: proc() {
         background_texture = &background_texture,
     }
     defer render.compute_resources_destroy(&r, &gradient_resources)
-    r.clear_draw_image = false
+
+    // Create custom test textures and their samplers
+    pack_unorm4x8 :: proc(v: [4]f32) -> u32 {
+        result: u32
+        for i in 0..<4 {
+            result |= u32(math.round(clamp(v[i], 0, 1) * 255)) << (u32(i) * 8)
+        }
+        return result
+    }
+
+    white   := pack_unorm4x8({ 1, 1, 1, 1 })
+    grey    := pack_unorm4x8({ 0.66, 0.66, 0.66, 0.66 })
+    black   := pack_unorm4x8({ 0, 0, 0, 0 })
+    magenta := pack_unorm4x8({ 1, 0, 1, 1 })
+
+    error_pixels: [16 * 16]u32 // for 16x16 checkerboard texture
+    for x in 0..<16 {
+        for y in 0..<16 {
+            error_pixels[y*16 + x] = ((x % 2) ~ (y % 2)) != 0 ? magenta : black
+        }
+    }
+
+    // Create the sampler
+    sampler_nearest, sampler_linear: vk.Sampler
+
+    sampler_info := vk.SamplerCreateInfo{ sType = vk.StructureType.SAMPLER_CREATE_INFO, }
+    sampler_info.magFilter = .NEAREST
+    sampler_info.minFilter = .NEAREST
+    vk.CreateSampler(r.logical_device, &sampler_info, nil, &sampler_nearest)
+    sampler_info.magFilter = .LINEAR
+    sampler_info.minFilter = .LINEAR
+    vk.CreateSampler(r.logical_device, &sampler_info, nil, &sampler_linear)
+    defer {
+        vk.DestroySampler(r.logical_device, sampler_nearest, nil)
+        vk.DestroySampler(r.logical_device, sampler_linear, nil)
+    }
+
+    white_texture := render.image_create_texture_from_data(&r, &white, vk.Extent3D{ 1, 1, 1 }, sampler_nearest, .R8G8B8A8_UNORM, { .SAMPLED })
+    black_texture := render.image_create_texture_from_data(&r, &black, vk.Extent3D{ 1, 1, 1 }, sampler_nearest, .R8G8B8A8_UNORM, { .SAMPLED })
+    grey_texture  := render.image_create_texture_from_data(&r, &grey,  vk.Extent3D{ 1, 1, 1 }, sampler_nearest, .R8G8B8A8_UNORM, { .SAMPLED })
+    error_texture := render.image_create_texture_from_data(&r, &error_pixels, vk.Extent3D{ 16, 16, 1 }, sampler_nearest, .R8G8B8A8_UNORM, { .SAMPLED })
+    defer {
+        render.image_destroy(&r, &white_texture)
+        render.image_destroy(&r, &black_texture)
+        render.image_destroy(&r, &grey_texture)
+        render.image_destroy(&r, &error_texture)
+    }
+
+    render.descriptor_layout_builder_add_binding(&layout_builder, 1, .COMBINED_IMAGE_SAMPLER, 1, { .FRAGMENT })
+    texture_descriptor_layout := render.descriptor_layout_builder_build(&layout_builder, &r)
+    texture_descriptor := render.descriptor_set_create(&r, { texture_descriptor_layout })
+    render.descriptor_writer_add_images(&descriptor_writer, texture_descriptor.handle, 1, { error_texture }, .COMBINED_IMAGE_SAMPLER)
+    render.descriptor_writer_update_sets(&descriptor_writer, &r)
+
+    monkey_material := get_test_gltf_material(&r, texture_descriptor_layout, &texture_descriptor)
+    defer render.pipeline_destroy(&r, &monkey_material.pipeline)
 
     monkey_pos := render.float3{ 0, 10, 7}
 
     recording_timer := render.timer_create()
+    r.clear_draw_image = false
 
     for !render.window_should_close(&r) {
         clear(&r.renderables) // TODO: As I think about this more, potentially clean this up

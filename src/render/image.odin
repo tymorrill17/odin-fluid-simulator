@@ -8,7 +8,7 @@ import "core:log"
 Image :: struct {
     handle:         vk.Image,
     view:           vk.ImageView,
-    sampler:        vk.Sampler, // only needed for images used as textures
+    sampler:        vk.Sampler,
     allocation:     vma.Allocation, // if nil, then the image has or needs no allocation
 
     layout:         vk.ImageLayout,
@@ -95,8 +95,16 @@ image_create_host :: proc(renderer: ^Renderer, extent: vk.Extent3D, format: vk.F
 }
 
 // Creates a device-only image that will be used for texture purposes
-image_create_texture :: proc(renderer: ^Renderer, extent: vk.Extent3D, format: vk.Format, usage: vk.ImageUsageFlags, use_mipmaps: bool = false) -> Image {
-    return image_create_private(renderer, extent, format, usage, .OPTIMAL, .AUTO, {}, use_mipmaps)
+image_create_texture :: proc(renderer: ^Renderer, extent: vk.Extent3D, sampler: vk.Sampler, format: vk.Format, usage: vk.ImageUsageFlags, use_mipmaps: bool = false) -> Image {
+    new_texture := image_create_private(renderer, extent, format, usage, .OPTIMAL, .AUTO, {}, use_mipmaps)
+    new_texture.sampler = sampler
+    return new_texture
+}
+
+image_create_texture_from_data :: proc(renderer: ^Renderer, data: rawptr, extent: vk.Extent3D, sampler: vk.Sampler, format: vk.Format, usage: vk.ImageUsageFlags, use_mipmaps: bool = false) -> Image {
+    new_texture := image_create_texture(renderer, extent, sampler, format, usage + { .TRANSFER_DST }, use_mipmaps)
+    image_copy_data_to_image_now(renderer, &new_texture, data, 4) // bytes per pixel; the proc multiplies by the extent
+    return new_texture
 }
 
 image_recreate :: proc(renderer: ^Renderer, image: ^Image, extent: vk.Extent3D) {
@@ -245,7 +253,9 @@ image_copy_data_to_image_now :: proc(renderer: ^Renderer, image: ^Image, data: r
 
     upload_buffer := buffer_create(renderer, data_size, 1, { .TRANSFER_SRC }, .CPU_TO_GPU)
     defer buffer_destroy(renderer, &upload_buffer)
+    buffer_map(renderer, &upload_buffer)
     buffer_write_data(renderer, &upload_buffer, data)
+    buffer_unmap(renderer, &upload_buffer)
 
     CommandCtx :: struct{ image: ^Image, upload_buffer: Buffer, }
     copy_command_ctx := CommandCtx{
@@ -262,14 +272,13 @@ image_copy_data_to_image_now :: proc(renderer: ^Renderer, image: ^Image, data: r
             imageSubresource = {
                 aspectMask      = ctx.image.aspect_flags,
                 mipLevel        = 0,
+                layerCount      = 1,
             },
         }
 
         vk.CmdCopyBufferToImage(cmd, ctx.upload_buffer.handle, ctx.image.handle, .TRANSFER_DST_OPTIMAL, 1, &copy_info)
         image_transition(cmd, ctx.image, .SHADER_READ_ONLY_OPTIMAL)
     })
-
-    buffer_destroy(renderer, &upload_buffer)
 }
 
 image_get_size :: proc(image_extent: vk.Extent3D, n_channels: int = 4) -> u64 { // rgba -> 4 channels by default

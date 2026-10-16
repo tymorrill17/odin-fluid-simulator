@@ -12,8 +12,8 @@ CACHE_DIR :: #config(CACHE_DIR, ".")
 
 @(private="file")
 pool_sizes := []vk.DescriptorPoolSize{
-    { .SAMPLED_IMAGE, imgui_impl_vulkan.MINIMUM_SAMPLED_IMAGE_POOL_SIZE },
-    { .SAMPLER, imgui_impl_vulkan.MINIMUM_SAMPLER_POOL_SIZE },
+    { .SAMPLED_IMAGE,   imgui_impl_vulkan.MINIMUM_SAMPLED_IMAGE_POOL_SIZE },
+    { .SAMPLER,         imgui_impl_vulkan.MINIMUM_SAMPLER_POOL_SIZE },
 }
 
 @(private="file")
