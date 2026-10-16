@@ -39,6 +39,7 @@ InputManager :: struct {
     mouse_states:       [MouseKey]KeyState,
 
     key_states:         #sparse[Key]KeyState,
+    keys_captured:      bool,
     delta_time:         f32,
 }
 
@@ -69,6 +70,7 @@ input_update :: proc(input: ^InputManager, renderer: ^Renderer) {
     }
     // TODO: potentially include mouse leaving the window or leaving focus here
     input.mouse_captured = !imgui.GetIO().WantCaptureMouse
+    input.keys_captured  = !imgui.GetIO().WantCaptureKeyboard
 
     // Get all button states
     for key in MouseKey {
