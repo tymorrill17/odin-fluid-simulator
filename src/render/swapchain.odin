@@ -8,6 +8,7 @@ import vk "vendor:vulkan"
 Swapchain :: struct {
     handle:             vk.SwapchainKHR,
     images:             []Image,
+    render_semaphores:  []vk.Semaphore, // Semaphore to let the GPU know no more rendering commands will be submitted. One per swapchain image
     current_image:      ^Image,
     image_index:        u32,
     image_format:       vk.Format,
@@ -15,18 +16,28 @@ Swapchain :: struct {
     n_swapchain_images: u32,
 }
 
+RetiredSwapchain :: struct {
+    swapchain:           Swapchain,
+    retire_frame_number: u64,
+}
+
 @(private)
-acquire_next_swapchain_image :: proc(renderer: ^Renderer) -> (swapchain_image: ^Image, swapchain_image_index: u32) {
+acquire_next_swapchain_image :: proc(renderer: ^Renderer) -> (swapchain_image: ^Image, swapchain_image_index: u32, success: bool) {
     result := vk.AcquireNextImageKHR(renderer.logical_device, renderer.swapchain.handle,
                 TIMEOUT, renderer.frame_acquired_image_sem[renderer.frame_index], NULL_HANDLE, &renderer.swapchain.image_index)
-    if result == .ERROR_OUT_OF_DATE_KHR || result == .SUBOPTIMAL_KHR {
+    #partial switch result {
+    case .SUCCESS:
+    case .SUBOPTIMAL_KHR:
         renderer.window.resized = true
-    } else if result != .SUCCESS {
+    case .ERROR_OUT_OF_DATE_KHR:
+        renderer.window.resized = true
+        return nil, 0, false
+    case:
         log.panic("Failed to acquire next swapchain image!")
     }
 
     renderer.swapchain.current_image = &renderer.swapchain.images[renderer.swapchain.image_index]
-    return renderer.swapchain.current_image, renderer.swapchain.image_index
+    return renderer.swapchain.current_image, renderer.swapchain.image_index, true
 }
 
 @(private)
@@ -50,16 +61,16 @@ present_to_screen :: proc(renderer: ^Renderer, queue: vk.Queue, render_semaphore
 
 @(private)
 swapchain_recreate :: proc(renderer: ^Renderer) {
-    vk.DeviceWaitIdle(renderer.logical_device)
-    image_index: u32 = renderer.swapchain.image_index
-    swapchain_destroy(renderer)
-    swapchain_create(renderer)
-    renderer.swapchain.image_index = image_index
-    renderer.swapchain.current_image = &renderer.swapchain.images[renderer.swapchain.image_index]
+    old_swapchain := renderer.swapchain
+    renderer.swapchain = swapchain_create(renderer, old_swapchain.handle)
+    append(&renderer.retired_swapchains, RetiredSwapchain{ old_swapchain, renderer.frame_number })
 }
 
 @(private)
-swapchain_create :: proc(renderer: ^Renderer) {
+swapchain_create :: proc(renderer: ^Renderer, old_swapchain: vk.SwapchainKHR = 0) -> Swapchain {
+
+    swapchain: Swapchain
+
     capabilities: vk.SurfaceCapabilitiesKHR
     vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(renderer.physical_device, renderer.surface, &capabilities)
 
@@ -77,7 +88,7 @@ swapchain_create :: proc(renderer: ^Renderer) {
     defer delete(present_modes)
     vk.GetPhysicalDeviceSurfacePresentModesKHR(renderer.physical_device, renderer.surface, &present_mode_count, raw_data(present_modes))
 
-    renderer.swapchain.image_index = 0
+    swapchain.image_index = 0
 
     // Set the defaults first
     surface_format: vk.SurfaceFormatKHR = surface_formats[0]
@@ -101,32 +112,33 @@ swapchain_create :: proc(renderer: ^Renderer) {
 
     // An extent of size UINT32_MAX means the window resolution should be used
     if capabilities.currentExtent.width != c.UINT32_MAX {
-        renderer.swapchain.extent = capabilities.currentExtent
+        swapchain.extent = capabilities.currentExtent
     } else {
-        renderer.swapchain.extent = vk.Extent2D{ u32(renderer.window.draw_extent.x), u32(renderer.window.draw_extent.y) }
+        swapchain.extent = vk.Extent2D{ u32(renderer.window.framebuffer_size.x), u32(renderer.window.framebuffer_size.y) }
         // Truncate the extent to within the surface capabilities
-        renderer.swapchain.extent.width = math.max(capabilities.minImageExtent.width,
-            math.min(capabilities.maxImageExtent.width, renderer.swapchain.extent.width))
-        renderer.swapchain.extent.height = math.max(capabilities.minImageExtent.height,
-            math.min(capabilities.maxImageExtent.height, renderer.swapchain.extent.height))
+        swapchain.extent.width = math.max(capabilities.minImageExtent.width,
+            math.min(capabilities.maxImageExtent.width, swapchain.extent.width))
+        swapchain.extent.height = math.max(capabilities.minImageExtent.height,
+            math.min(capabilities.maxImageExtent.height, swapchain.extent.height))
     }
 
-    renderer.swapchain.image_format = surface_format.format
+    swapchain.image_format = surface_format.format
 
-    renderer.swapchain.n_swapchain_images = capabilities.minImageCount + 1
+    swapchain.n_swapchain_images = capabilities.minImageCount + 1
     if capabilities.maxImageCount > 0 &&
-        renderer.swapchain.n_swapchain_images > capabilities.maxImageCount {
+        swapchain.n_swapchain_images > capabilities.maxImageCount {
 
-        renderer.swapchain.n_swapchain_images = capabilities.maxImageCount
+        swapchain.n_swapchain_images = capabilities.maxImageCount
     }
 
     swapchain_create_info := vk.SwapchainCreateInfoKHR{
         sType               = .SWAPCHAIN_CREATE_INFO_KHR,
+        oldSwapchain        = old_swapchain,
         surface             = renderer.surface,
-        minImageCount       = renderer.swapchain.n_swapchain_images,
-        imageFormat         = renderer.swapchain.image_format,
+        minImageCount       = swapchain.n_swapchain_images,
+        imageFormat         = swapchain.image_format,
         imageColorSpace     = surface_format.colorSpace,
-        imageExtent         = renderer.swapchain.extent,
+        imageExtent         = swapchain.extent,
         imageArrayLayers    = 1,
         imageUsage          = { .TRANSFER_DST, .COLOR_ATTACHMENT },
         preTransform        = capabilities.currentTransform,
@@ -146,52 +158,61 @@ swapchain_create :: proc(renderer: ^Renderer) {
         swapchain_create_info.pQueueFamilyIndices   = raw_data(&renderer.queue_indices)
     }
 
-    if vk.CreateSwapchainKHR(renderer.logical_device, &swapchain_create_info, nil, &renderer.swapchain.handle) != .SUCCESS {
+    if vk.CreateSwapchainKHR(renderer.logical_device, &swapchain_create_info, nil, &swapchain.handle) != .SUCCESS {
         log.panic("Failed to create swapchain!")
     }
 
-    renderer.swapchain.images = make([]Image, renderer.swapchain.n_swapchain_images)
-    image_handles := make([]vk.Image, renderer.swapchain.n_swapchain_images)
+    vk.GetSwapchainImagesKHR(renderer.logical_device, swapchain.handle, &swapchain.n_swapchain_images, nil)
+    swapchain.images = make([]Image, swapchain.n_swapchain_images)
+    image_handles := make([]vk.Image, swapchain.n_swapchain_images)
     defer delete(image_handles)
-    vk.GetSwapchainImagesKHR(renderer.logical_device, renderer.swapchain.handle, &renderer.swapchain.n_swapchain_images, raw_data(image_handles))
+    vk.GetSwapchainImagesKHR(renderer.logical_device, swapchain.handle, &swapchain.n_swapchain_images, raw_data(image_handles))
 
     for image, i in image_handles {
-        renderer.swapchain.images[i] = Image{
+        swapchain.images[i] = Image{
             handle          = image,
             layout          = .UNDEFINED,
-            extent          = vk.Extent3D{ height = renderer.swapchain.extent.height, width = renderer.swapchain.extent.width, depth = 1 },
-            format          = renderer.swapchain.image_format,
+            extent          = vk.Extent3D{ height = swapchain.extent.height, width = swapchain.extent.width, depth = 1 },
+            format          = swapchain.image_format,
             aspect_flags    = { .COLOR, },
             mip_levels      = 1,
         }
 
         // Create associated image view. This is going to be a color aspect image view
         subresource_range := vk.ImageSubresourceRange{
-            aspectMask = renderer.swapchain.images[i].aspect_flags,
+            aspectMask = swapchain.images[i].aspect_flags,
             baseMipLevel = 0,
-            levelCount = renderer.swapchain.images[i].mip_levels,
+            levelCount = swapchain.images[i].mip_levels,
             baseArrayLayer = 0,
             layerCount = 1
         }
         image_view_info := vk.ImageViewCreateInfo{
             sType = .IMAGE_VIEW_CREATE_INFO,
-            image = renderer.swapchain.images[i].handle,
+            image = swapchain.images[i].handle,
             viewType = .D2,
-            format = renderer.swapchain.images[i].format,
+            format = swapchain.images[i].format,
             subresourceRange = subresource_range
         }
-        vk.CreateImageView(renderer.logical_device, &image_view_info, nil, &renderer.swapchain.images[i].view)
+        vk.CreateImageView(renderer.logical_device, &image_view_info, nil, &swapchain.images[i].view)
 
     }
 
-    renderer.swapchain.current_image = &renderer.swapchain.images[renderer.swapchain.image_index]
+    swapchain.current_image = &swapchain.images[swapchain.image_index]
+
+    swapchain.render_semaphores = make([]vk.Semaphore, swapchain.n_swapchain_images)
+    for i in 0..<swapchain.n_swapchain_images {
+        swapchain.render_semaphores[i] = semaphore_create(renderer)
+    }
+
+    return swapchain
 }
 
 @(private)
-swapchain_destroy :: proc(renderer: ^Renderer) {
-    for image in renderer.swapchain.images {
-        vk.DestroyImageView(renderer.logical_device, image.view, nil)
-    }
-    delete(renderer.swapchain.images)
-    vk.DestroySwapchainKHR(renderer.logical_device, renderer.swapchain.handle, nil)
+swapchain_destroy :: proc(renderer: ^Renderer, swapchain: ^Swapchain) {
+    for image in swapchain.images do vk.DestroyImageView(renderer.logical_device, image.view, nil)
+    delete(swapchain.images)
+    vk.DestroySwapchainKHR(renderer.logical_device, swapchain.handle, nil)
+    for semaphore in swapchain.render_semaphores do semaphore_destroy(renderer, semaphore)
+    delete(swapchain.render_semaphores)
+    swapchain^ = {}
 }

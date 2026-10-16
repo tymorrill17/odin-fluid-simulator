@@ -64,8 +64,8 @@ input_update :: proc(input: ^InputManager, renderer: ^Renderer) {
     input.mouse_delta    = position - input.mouse_position
     input.mouse_position = position
     input.mouse_ndc = {
-        2 * (position.x / f32(window.extent.x)) - 1,
-        2 * (position.y / f32(window.extent.y)) - 1,
+        2 * (position.x / f32(window.resolution.x)) - 1,
+        2 * (position.y / f32(window.resolution.y)) - 1,
     }
     // TODO: potentially include mouse leaving the window or leaving focus here
     input.mouse_captured = !imgui.GetIO().WantCaptureMouse

@@ -77,8 +77,10 @@ Renderer :: struct {
     surface:                    vk.SurfaceKHR,
     allocator:                  vma.Allocator,
     swapchain:                  Swapchain,
+    retired_swapchains:         [dynamic]RetiredSwapchain,
     draw_image:                 Image,
     depth_image:                Image,
+    draw_extent:                vk.Extent3D,
     command_pool:               vk.CommandPool,
     frame_commands:             []vk.CommandBuffer,
     immediate_command_pool:     vk.CommandPool,
@@ -89,7 +91,6 @@ Renderer :: struct {
 
     frame_acquired_image_sem:   []vk.Semaphore, // Semaphore to let the GPU know the swapchain image has been acquired. One per frame
     frame_render_fence:         []vk.Fence, // Lets the GPU know that the CPU is done issuing rendering commands. One per frame
-    swapchain_render_sem:       []vk.Semaphore, // Semaphore to let the GPU know no more rendering commands will be submitted. One per swapchain image
 
     // To avoid indexing the wrong frame-specific sync objects or command buffer
     current_command:            ^vk.CommandBuffer,
@@ -160,16 +161,26 @@ renderer_initialize :: proc(renderer: ^Renderer, renderer_cfg: RendererConfig) {
     surface_initialize(renderer)
     devices_initialize(renderer, renderer_cfg.use_discrete_GPU, renderer_cfg.device_extensions)
     vulkan_allocator_initialize(renderer)
-    swapchain_create(renderer)
+    renderer.swapchain = swapchain_create(renderer)
     renderer.frames_in_flight = renderer.swapchain.n_swapchain_images
+    renderer.retired_swapchains = make([dynamic]RetiredSwapchain)
 
     // Create the draw and depth images
-    render_extent := vk.Extent3D{ u32(renderer.window.draw_extent.x), u32(renderer.window.draw_extent.y), 1}
-    renderer.draw_image = image_create_device(renderer, render_extent, renderer.swapchain.image_format,
+    max_dim := renderer.physical_device_properties.limits.maxImageDimension2D
+    max_draw_extent := vk.Extent3D{
+        width  = min(u32(renderer.window.max_framebuffer_size.x), max_dim),
+        height = min(u32(renderer.window.max_framebuffer_size.y), max_dim),
+        depth  = 1,
+    }
+    renderer.draw_image = image_create_device(renderer, max_draw_extent, renderer.swapchain.image_format,
         { .TRANSFER_SRC, .TRANSFER_DST, .COLOR_ATTACHMENT, .STORAGE })
         // { .TRANSFER_SRC, .TRANSFER_DST, .COLOR_ATTACHMENT })
-    renderer.depth_image = image_create_device(renderer, render_extent, .D32_SFLOAT, { .DEPTH_STENCIL_ATTACHMENT })
-
+    renderer.depth_image = image_create_device(renderer, max_draw_extent, .D32_SFLOAT, { .DEPTH_STENCIL_ATTACHMENT })
+    renderer.draw_extent = vk.Extent3D{
+        width  = math.min(renderer.draw_image.extent.width, renderer.swapchain.extent.width),
+        height = math.min(renderer.draw_image.extent.height, renderer.swapchain.extent.height),
+        depth  = 1
+    }
     command_pool_initialize(renderer)
     // Allocate a command buffer for each frame in flight
     renderer.frame_commands = make([]vk.CommandBuffer, renderer.frames_in_flight)
@@ -182,11 +193,6 @@ renderer_initialize :: proc(renderer: ^Renderer, renderer_cfg: RendererConfig) {
         renderer.frame_acquired_image_sem[i] = semaphore_create(renderer)
         renderer.frame_render_fence[i]       = fence_create(renderer, { .SIGNALED })
     }
-    renderer.swapchain_render_sem = make([]vk.Semaphore, renderer.swapchain.n_swapchain_images)
-    for i in 0..<renderer.swapchain.n_swapchain_images {
-        renderer.swapchain_render_sem[i] = semaphore_create(renderer)
-    }
-
     // inititalizes immediate_command_pool, immediate_command, and immediate_submit_fence
     immediate_command_initialize(renderer)
 
@@ -206,7 +212,7 @@ renderer_initialize :: proc(renderer: ^Renderer, renderer_cfg: RendererConfig) {
 
     renderer.current_acquired_image_sem = &renderer.frame_acquired_image_sem[renderer.frame_index]
     renderer.current_render_fence       = &renderer.frame_render_fence[renderer.frame_index]
-    renderer.current_swpch_render_sem   = &renderer.swapchain_render_sem[renderer.swapchain.image_index]
+    renderer.current_swpch_render_sem   = &renderer.swapchain.render_semaphores[renderer.swapchain.image_index]
     renderer.current_command            = &renderer.frame_commands[renderer.frame_index]
 
     renderer.input_manager = input_manager_create(&renderer.window)
@@ -244,10 +250,6 @@ renderer_shutdown :: proc(renderer: ^Renderer) {
         semaphore_destroy(renderer, renderer.frame_acquired_image_sem[i])
         fence_destroy(renderer, renderer.frame_render_fence[i])
     }
-    for i in 0..<renderer.swapchain.n_swapchain_images {
-        semaphore_destroy(renderer, renderer.swapchain_render_sem[i])
-    }
-    delete(renderer.swapchain_render_sem)
     delete(renderer.frame_render_fence)
     delete(renderer.frame_acquired_image_sem)
 
@@ -259,7 +261,11 @@ renderer_shutdown :: proc(renderer: ^Renderer) {
     image_destroy(renderer, &renderer.depth_image)
     image_destroy(renderer, &renderer.draw_image)
 
-    swapchain_destroy(renderer)
+    swapchain_destroy(renderer, &renderer.swapchain)
+    for &retired in renderer.retired_swapchains {
+        swapchain_destroy(renderer, &retired.swapchain)
+    }
+    delete(renderer.retired_swapchains)
 
     // vma cleanup
     vma.DestroyAllocator(renderer.allocator)
@@ -302,15 +308,41 @@ start_frame :: proc(renderer: ^Renderer) {
 }
 
 draw :: proc(renderer: ^Renderer) {
-    if renderer.window.minimized do return
+    if renderer.window.minimized {
+        gui_skip_frame()
+        return
+    }
     frame_index := renderer.frame_index
 
     frame_render_fence := renderer.frame_render_fence[frame_index]
     vk.WaitForFences(renderer.logical_device, 1, &frame_render_fence, true, TIMEOUT)
 
-    current_swapchain_image, swapchain_image_index := acquire_next_swapchain_image(renderer)
-    renderer.current_swpch_render_sem   = &renderer.swapchain_render_sem[swapchain_image_index]
+    // Cleanup old swapchains
+    #reverse for &retired, i in renderer.retired_swapchains {
+        if renderer.frame_number >= retired.retire_frame_number + u64(renderer.frames_in_flight) {
+            swapchain_destroy(renderer, &retired.swapchain)
+            unordered_remove(&renderer.retired_swapchains, i)
+        }
+    }
+
+    current_swapchain_image, swapchain_image_index, acquired := acquire_next_swapchain_image(renderer)
+    if !acquired {
+        gui_skip_frame()
+        return
+    }
+    renderer.current_swpch_render_sem   = &renderer.swapchain.render_semaphores[swapchain_image_index]
     vk.ResetFences(renderer.logical_device, 1, &frame_render_fence)
+
+    renderer.draw_extent = vk.Extent3D{
+        width  = math.min(renderer.draw_image.extent.width, renderer.swapchain.extent.width),
+        height = math.min(renderer.draw_image.extent.height, renderer.swapchain.extent.height),
+        depth  = 1
+    }
+
+    draw_area := vk.Extent2D{
+        width  = renderer.draw_extent.width,
+        height = renderer.draw_extent.height,
+    }
 
     cmd := renderer.frame_commands[frame_index]
     vk.ResetCommandBuffer(cmd, {})
@@ -333,25 +365,20 @@ draw :: proc(renderer: ^Renderer) {
     color_attachment := color_attachment_info_struct(renderer.draw_image, renderer.clear_draw_image ? &clear_value : nil)
     depth_attachment := depth_attachment_info_struct(renderer.depth_image)
 
-    draw_extent := vk.Extent2D{
-        width   = math.min(renderer.draw_image.extent.width, renderer.swapchain.extent.width),
-        height  = math.min(renderer.draw_image.extent.height, renderer.swapchain.extent.height)
-    }
-
-    render_info := rendering_info_struct(draw_extent, 1, &color_attachment, &depth_attachment)
+    render_info := rendering_info_struct(draw_area, 1, &color_attachment, &depth_attachment)
 
     viewport := vk.Viewport{
         x           = 0,
         y           = 0,
-        width       = f32(draw_extent.width),
-        height      = f32(draw_extent.height),
+        width       = f32(draw_area.width),
+        height      = f32(draw_area.height),
         minDepth    = 0,
         maxDepth    = 1,
     }
 
     scissor := vk.Rect2D{
         offset = { 0, 0 },
-        extent = draw_extent,
+        extent = draw_area,
     }
 
     vk.CmdBeginRendering(cmd, &render_info)
@@ -403,7 +430,7 @@ draw :: proc(renderer: ^Renderer) {
     // Draw image is going to be copied to the swapchain image, so transition it to a transfer source layout
     image_transition(cmd, &renderer.draw_image, .TRANSFER_SRC_OPTIMAL)
     image_transition(cmd, current_swapchain_image, .TRANSFER_DST_OPTIMAL) // Swapchain image needs to be transitioned to a transfer destination layout
-    image_copy(cmd, renderer.draw_image, current_swapchain_image^)
+    image_copy_subimage(cmd, renderer.draw_image, renderer.draw_extent, current_swapchain_image^, renderer.draw_extent)
     if renderer.capturing_primed do capture_copy_image(cmd, renderer)
 
     gui_draw(renderer)
@@ -429,10 +456,10 @@ draw :: proc(renderer: ^Renderer) {
     present_queue := renderer.queues[.present]
     submit_to_queue(renderer, cmd, present_queue,
         renderer.frame_acquired_image_sem[frame_index],
-        renderer.swapchain_render_sem[swapchain_image_index],
+        renderer.swapchain.render_semaphores[swapchain_image_index],
         renderer.frame_render_fence[frame_index]
     )
-    present_to_screen(renderer, present_queue, &renderer.swapchain_render_sem[swapchain_image_index])
+    present_to_screen(renderer, present_queue, &renderer.swapchain.render_semaphores[swapchain_image_index])
 
     renderer.frame_number += 1
     renderer.frame_index = u32(renderer.frame_number % u64(renderer.frames_in_flight))
@@ -451,10 +478,22 @@ resize_callback :: proc(renderer: ^Renderer) {
         wait_idle(renderer)
         update_window_info(&renderer.window)
         swapchain_recreate(renderer)
-        image_recreate(renderer, &renderer.draw_image, vk.Extent3D{ u32(renderer.window.draw_extent.x), u32(renderer.window.draw_extent.y), 1 })
-        image_recreate(renderer, &renderer.depth_image, vk.Extent3D{ u32(renderer.window.draw_extent.x), u32(renderer.window.draw_extent.y), 1 })
+
+        // If there is a new monitor that is greater than the previous max, rebuild. This should rarely happen.
+        framebuffer_size := renderer.window.framebuffer_size
+        if u32(framebuffer_size.x) > renderer.draw_image.extent.width || u32(framebuffer_size.y) > renderer.draw_image.extent.height {
+            max_dim := renderer.physical_device_properties.limits.maxImageDimension2D
+            new_extent := vk.Extent3D{
+                width  = min(u32(renderer.window.max_framebuffer_size.x), max_dim),
+                height = min(u32(renderer.window.max_framebuffer_size.y), max_dim),
+                depth  = 1,
+            }
+            image_recreate(renderer, &renderer.draw_image, new_extent)
+            image_recreate(renderer, &renderer.depth_image, new_extent)
+            recorder_resize_buffers(renderer, &renderer.recorder)
+        }
+
         if renderer.recorder.recording do capture_end_recording(renderer)
-        recorder_resize_buffers(renderer, &renderer.recorder)
         renderer.window.resized = false // swapchain and draw images remade, resize was handled
     }
 }

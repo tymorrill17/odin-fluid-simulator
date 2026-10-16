@@ -103,6 +103,10 @@ gui_start_frame :: proc() {
     imgui.NewFrame()
 }
 
+gui_skip_frame :: proc() {
+    imgui.EndFrame()
+}
+
 @(private)
 gui_draw :: proc(renderer: ^Renderer) {
     cmd := renderer.current_command^ // Get the current frame's command buffer

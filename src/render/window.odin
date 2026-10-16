@@ -2,26 +2,30 @@ package render
 
 import "vendor:glfw"
 import "core:log"
+import "core:math"
 
 Window :: struct {
-    glfw_window:        glfw.WindowHandle,
-    glfw_monitor:       glfw.MonitorHandle,
-    glfw_mode:          ^glfw.VidMode,
+    glfw_window:            glfw.WindowHandle,
+    glfw_monitor:           glfw.MonitorHandle,
+    glfw_mode:              ^glfw.VidMode,
 
-    extent:             int2, // The size of the window, not accounting for desktop scaling
-    draw_extent:        int2, // The number of pixels the extent takes up. (== extent * scale)
-    aspect_ratio:       f32,
-    position:           int2,
-    scale:              float2,
+    resolution:             int2, // The size of the window in physical pixels
+    framebuffer_size:       int2, // The number of pixels the extent takes up. (== resolution * scale)
+    aspect_ratio:           f32,
+    position:               int2,
+    scale:                  float2,
+    max_resolution:         int2, // The maximum monitor resolution over all monitors
+    max_framebuffer_size:   int2, // The max framebuffer size over all monitors (max_resolution * scale)
 
     // To save the windowed position and size when going into fullscreen
-    saved_position:     int2,
-    saved_extent:       int2,
+    saved_position:         int2,
+    saved_resolution:       int2,
 
-    should_close:       bool,
-    minimized:          bool,
-    fullscreen:         bool,
-    resized:            bool,
+    should_close:           bool,
+    minimized:              bool,
+    fullscreen:             bool,
+    resized:                bool,
+
 }
 
 @(private)
@@ -34,7 +38,8 @@ window_create :: proc(width, height: i32, name: cstring) -> Window {
     window.minimized    = false
 
     when ODIN_OS == .Linux {
-        glfw.InitHint(glfw.PLATFORM, glfw.PLATFORM_X11)
+        // glfw.InitHint(glfw.PLATFORM, glfw.PLATFORM_X11)
+        glfw.InitHint(glfw.PLATFORM, glfw.PLATFORM_WAYLAND)
     }
     when ODIN_OS == .Windows {
         glfw.InitHint(glfw.PLATFORM, glfw.PLATFORM_WIN32)
@@ -83,7 +88,7 @@ window_destroy :: proc(window: ^Window) {
 
 set_fullscreen :: proc(window: ^Window, enable: bool) {
     if enable {
-        window.saved_extent.x, window.saved_extent.y     = glfw.GetWindowSize(window.glfw_window)
+        window.saved_resolution.x, window.saved_resolution.y     = glfw.GetWindowSize(window.glfw_window)
         window.saved_position.x, window.saved_position.y = glfw.GetWindowPos(window.glfw_window)
 
         glfw.SetWindowMonitor(window.glfw_window, window.glfw_monitor, 0, 0,
@@ -91,7 +96,7 @@ set_fullscreen :: proc(window: ^Window, enable: bool) {
     } else { // disable
         glfw.SetWindowMonitor(window.glfw_window, nil,
             window.saved_position.x, window.saved_position.y,
-            window.saved_extent.x, window.saved_extent.y, 0)
+            window.saved_resolution.x, window.saved_resolution.y, 0)
     }
 
     window.fullscreen = enable
@@ -118,11 +123,34 @@ poll_events :: proc() {
 
 @(private)
 update_window_info :: proc(window: ^Window) {
-    window.scale.x, window.scale.y             = glfw.GetWindowContentScale(window.glfw_window)
-    window.extent.x, window.extent.y           = glfw.GetWindowSize(window.glfw_window)
-    window.draw_extent.x, window.draw_extent.y = glfw.GetFramebufferSize(window.glfw_window)
-    window.position.x, window.position.y       = glfw.GetWindowPos(window.glfw_window)
-    window.aspect_ratio                        = f32(window.extent.x) / f32(window.extent.y)
+    window.scale.x, window.scale.y                       = glfw.GetWindowContentScale(window.glfw_window)
+    window.resolution.x, window.resolution.y             = glfw.GetWindowSize(window.glfw_window)
+    window.framebuffer_size.x, window.framebuffer_size.y = glfw.GetFramebufferSize(window.glfw_window)
+    window.position.x, window.position.y                 = glfw.GetWindowPos(window.glfw_window)
+    window.aspect_ratio                                  = f32(window.resolution.x) / f32(window.resolution.y)
+
+    window.max_resolution = {}
+    window.max_framebuffer_size = window.framebuffer_size // never smaller than what the window has right now
+
+    for monitor in glfw.GetMonitors() {
+        mode := glfw.GetVideoMode(monitor)
+        if mode == nil do continue
+
+        resolution  := int2{ mode.width, mode.height }
+        framebuffer := resolution
+
+        // To account for WAYLAND desktop scaling
+        if glfw.GetPlatform() == glfw.PLATFORM_WAYLAND {
+            scale_x, scale_y := glfw.GetMonitorContentScale(monitor)
+            if scale_x > 0 do framebuffer.x = i32(math.ceil(f32(mode.width)  / scale_x * math.ceil(scale_x)))
+            if scale_y > 0 do framebuffer.y = i32(math.ceil(f32(mode.height) / scale_y * math.ceil(scale_y)))
+        }
+
+        window.max_resolution.x = math.max(window.max_resolution.x, resolution.x)
+        window.max_resolution.y = math.max(window.max_resolution.y, resolution.y)
+        window.max_framebuffer_size.x = math.max(window.max_framebuffer_size.x, framebuffer.x)
+        window.max_framebuffer_size.y = math.max(window.max_framebuffer_size.y, framebuffer.y)
+    }
 }
 
 @(private)

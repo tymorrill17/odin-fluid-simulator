@@ -67,6 +67,7 @@ get_gradient_compute_pipeline :: proc(renderer: ^render.Renderer, background_tex
 
     render.pipeline_cfg_add_shader(&pipeline_cfg, shader, { .COMPUTE }, "gradient")
     render.pipeline_cfg_add_descriptor(&pipeline_cfg, background_texture_layout)
+    render.pipeline_cfg_add_push_constant_range(&pipeline_cfg, { .COMPUTE }, size_of(GradientPushConstants))
 
     pipeline := render.pipeline_cfg_build_compute_pipeline(&pipeline_cfg, renderer)
     return render.compute_resources_create(pipeline, { background_texture_descriptor })
@@ -77,17 +78,24 @@ GradientData :: struct {
     background_texture: ^render.Image,
 }
 
+GradientPushConstants :: struct {
+    image_extent: render.uint2
+}
+
 gradient_dispatch :: proc(cmd: vk.CommandBuffer, renderer: ^render.Renderer, data: rawptr) {
     gradient_data := (^GradientData)(data)
     render.compute_resource_bind(cmd, gradient_data.resources, renderer.frame_index)
-    extent := gradient_data.background_texture.extent
+    extent := renderer.draw_extent
+    push_constants := GradientPushConstants{ image_extent = { extent.width, extent.height } }
+    pipeline := gradient_data.resources.pipeline
+    vk.CmdPushConstants(cmd, pipeline.layout, pipeline.push_constant_stages, 0, size_of(GradientPushConstants), &push_constants)
     // TODO: Should I hard-code the number of threads here?
     vk.CmdDispatch(cmd, (extent.width + 15) / 16, (extent.height + 15) / 16, 1)
 
     // Copy the result into the draw image
     render.image_transition(cmd, gradient_data.background_texture, .TRANSFER_SRC_OPTIMAL)
     render.image_transition(cmd, &renderer.draw_image, .TRANSFER_DST_OPTIMAL)
-    render.image_copy(cmd, gradient_data.background_texture^, renderer.draw_image)
+    render.image_copy_subimage(cmd, gradient_data.background_texture^, renderer.draw_extent, renderer.draw_image, renderer.draw_extent)
 
     // Restore the layouts the rest of the frame expects
     render.image_transition(cmd, &renderer.draw_image, .GENERAL)
