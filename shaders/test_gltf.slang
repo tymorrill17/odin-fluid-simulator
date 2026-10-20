@@ -12,7 +12,7 @@ ConstantBuffer<GlobalSceneData> g_scene;
 [[vk::push_constant]]
 DrawPushConstants push_constants;
 
-[[vk::binding(1, 1)]]
+[[vk::binding(0, 1)]]
 Sampler2D texture;
 
 struct VSOutput {

@@ -80,10 +80,7 @@ get_test_gltf_material :: proc(renderer: ^render.Renderer, descriptor_layout: vk
     render.pipeline_cfg_set_depth_attachment_format(&pipeline_cfg, renderer.depth_image.format)
     render.pipeline_cfg_set_depth_test(&pipeline_cfg, .GREATER_OR_EQUAL)
     render.pipeline_cfg_add_push_constant_range(&pipeline_cfg, { .VERTEX }, size_of(render.DrawPushConstants))
-
-    for layout in renderer.scene_descriptor_layouts {
-        render.pipeline_cfg_add_descriptor(&pipeline_cfg, layout)
-    }
+    render.pipeline_cfg_add_descriptor(&pipeline_cfg, renderer.scene_descriptor_layout)
 
     material: render.MaterialInstance
     material.pass_type = .opaque
@@ -164,31 +161,19 @@ main :: proc() {
     defer render.renderer_shutdown(&r)
 
     // Create an instance of the global uniform buffer for each frame in flight
-    global_uniform_buffer := render.buffer_create(&r, size_of(render.CameraData), u64(r.frames_in_flight), { .UNIFORM_BUFFER }, .CPU_TO_GPU)
-    defer render.buffer_destroy(&r, &global_uniform_buffer)
-    render.buffer_map(&r, &global_uniform_buffer)
-    camera_data := render.CameraData{
+    global_scene_buffer := render.buffer_create(&r, size_of(render.SceneData), u64(r.frames_in_flight), { .UNIFORM_BUFFER }, .CPU_TO_GPU)
+    defer render.buffer_destroy(&r, &global_scene_buffer)
+    render.buffer_map(&r, &global_scene_buffer)
+    global_scene_data := render.SceneData{
         viewproj = (1), // initialize to identity matrix
         view     = (1),
         proj     = (1),
     }
 
-    layout_builder := render.descriptor_layout_builder_create()
-    defer render.descriptor_layout_builder_destroy(&layout_builder)
-    defer render.descriptor_layout_builder_destroy_built_layouts(&layout_builder, &r)
-    descriptor_writer := render.descriptor_writer_create()
-    defer render.descriptor_writer_destroy(&descriptor_writer)
-
-    // Build the descriptor layout for the global scene descriptors (like camera data, etc)
-    render.descriptor_layout_builder_add_binding(&layout_builder, 0, .UNIFORM_BUFFER_DYNAMIC, 1, { .VERTEX, .COMPUTE })
-    global_scene_layout := render.descriptor_layout_builder_build(&layout_builder, &r)
-    append(&r.scene_descriptor_layouts, global_scene_layout)
-    camera_descriptor := render.descriptor_set_create(&r, { global_scene_layout })
-    append(&r.scene_descriptors, &camera_descriptor)
-
     // Point the global descriptors to their buffers in the Renderer class
-    render.descriptor_writer_add_buffers(&descriptor_writer, r.scene_descriptors[0], 0, { global_uniform_buffer }, .UNIFORM_BUFFER_DYNAMIC)
-    render.descriptor_writer_update_sets(&descriptor_writer, &r)
+    // TODO: make this an engine function i think?
+    render.descriptor_writer_add_buffers(&r.descriptor_writer, &r.scene_descriptor, 0, { global_scene_buffer }, .UNIFORM_BUFFER_DYNAMIC)
+    render.descriptor_writer_update_sets(&r.descriptor_writer, &r)
 
     // Create meshes
     particle_mesh := render.mesh_create_rectangle(&r, 1, 1)
@@ -243,14 +228,14 @@ main :: proc() {
     background_texture := render.image_create_device(&r, r.draw_image.extent, .R16G16B16A16_SFLOAT, { .TRANSFER_SRC, .COLOR_ATTACHMENT, .STORAGE})
     defer render.image_destroy(&r, &background_texture)
     render.image_transition_now(&r, &background_texture, .GENERAL)
-    render.descriptor_layout_builder_add_binding(&layout_builder, 0, .STORAGE_IMAGE, 1, { .COMPUTE })
-    background_texture_desc_layout := render.descriptor_layout_builder_build(&layout_builder, &r)
+    render.descriptor_layout_builder_add_binding(&r.descriptor_layout_builder, 0, .STORAGE_IMAGE, 1, { .COMPUTE })
+    background_texture_desc_layout := render.descriptor_layout_builder_build(&r.descriptor_layout_builder, &r)
     background_texture_set := render.descriptor_set_create(&r, { background_texture_desc_layout })
     defer render.descriptor_set_destroy(&background_texture_set)
-    render.descriptor_writer_add_images(&descriptor_writer, background_texture_set.handle, 0, { background_texture }, .STORAGE_IMAGE)
-    render.descriptor_writer_update_sets(&descriptor_writer, &r)
+    render.descriptor_writer_add_images(&r.descriptor_writer, background_texture_set.handle, 0, { background_texture }, .STORAGE_IMAGE)
+    render.descriptor_writer_update_sets(&r.descriptor_writer, &r)
 
-    gradient_resources := get_gradient_compute_pipeline(&r, { global_scene_layout, background_texture_desc_layout }, { &camera_descriptor, &background_texture_set })
+    gradient_resources := get_gradient_compute_pipeline(&r, { r.scene_descriptor_layout, background_texture_desc_layout }, { &r.scene_descriptor, &background_texture_set })
     gradient_data := GradientData{
         resources = &gradient_resources,
         background_texture = &background_texture,
@@ -304,11 +289,11 @@ main :: proc() {
         render.image_destroy(&r, &error_texture)
     }
 
-    render.descriptor_layout_builder_add_binding(&layout_builder, 1, .COMBINED_IMAGE_SAMPLER, 1, { .FRAGMENT })
-    texture_descriptor_layout := render.descriptor_layout_builder_build(&layout_builder, &r)
+    render.descriptor_layout_builder_add_binding(&r.descriptor_layout_builder, 0, .COMBINED_IMAGE_SAMPLER, 1, { .FRAGMENT })
+    texture_descriptor_layout := render.descriptor_layout_builder_build(&r.descriptor_layout_builder, &r)
     texture_descriptor := render.descriptor_set_create(&r, { texture_descriptor_layout })
-    render.descriptor_writer_add_images(&descriptor_writer, texture_descriptor.handle, 1, { error_texture }, .COMBINED_IMAGE_SAMPLER)
-    render.descriptor_writer_update_sets(&descriptor_writer, &r)
+    render.descriptor_writer_add_images(&r.descriptor_writer, texture_descriptor.handle, 0, { error_texture }, .COMBINED_IMAGE_SAMPLER)
+    render.descriptor_writer_update_sets(&r.descriptor_writer, &r)
 
     monkey_material := get_test_gltf_material(&r, texture_descriptor_layout, &texture_descriptor)
     defer render.pipeline_destroy(&r, &monkey_material.pipeline)
@@ -402,10 +387,10 @@ main :: proc() {
 
         aspect_ratio := r.window.aspect_ratio
         up := render.float3{ 0, 1, 0 }
-        camera_data.proj = render.projection_set_perspective(camera_config.fov, aspect_ratio, camera_config.near_plane, camera_config.far_plane)
-        camera_data.view = render.view_set_direction(camera_controller.position, camera_controller.forward, render.g_world_up)
-        camera_data.viewproj = camera_data.proj * camera_data.view
-        render.buffer_write_data_at_index(&r, &global_uniform_buffer, rawptr(&camera_data), r.frame_index) // Update at the right index for this frame
+        global_scene_data.proj = render.projection_set_perspective(camera_config.fov, aspect_ratio, camera_config.near_plane, camera_config.far_plane)
+        global_scene_data.view = render.view_set_direction(camera_controller.position, camera_controller.forward, render.g_world_up)
+        global_scene_data.viewproj = global_scene_data.proj * global_scene_data.view
+        render.buffer_write_data_at_index(&r, &global_scene_buffer, rawptr(&global_scene_data), r.frame_index) // Update at the right index for this frame
 
         // Update fluidsim particles.
         render.particle_system_update(&fluidsim_particle_system, &r, r.frame_time)

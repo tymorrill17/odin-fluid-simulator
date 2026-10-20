@@ -8,7 +8,7 @@ struct GradientPushConstants {
 GradientPushConstants push_constants;
 
 [[vk::binding(0, 0)]]
-ConstantBuffer<GlobalSceneData> camera_data;
+ConstantBuffer<GlobalSceneData> scene_data;
 
 [[vk::binding(0, 1)]]
 [[vk::image_format("rgba16f")]]
@@ -22,10 +22,10 @@ float3 view_ray(uint2 pixel, uint2 extent) {
     float2 ndc = (float2(pixel) + 0.5) / float2(extent) * 2.0 - 1.0;
 
     // Undo the projection
-    float3 view_dir = float3(ndc.x / camera_data.proj[0][0], ndc.y / camera_data.proj[1][1], -1.0);
+    float3 view_dir = float3(ndc.x / scene_data.proj[0][0], ndc.y / scene_data.proj[1][1], -1.0);
 
     // Apply the inverse of the view rotation
-    float4x4 view = camera_data.view;
+    float4x4 view = scene_data.view;
     return normalize(view[0].xyz * view_dir.x + view[1].xyz * view_dir.y + view[2].xyz * view_dir.z);
 }
 

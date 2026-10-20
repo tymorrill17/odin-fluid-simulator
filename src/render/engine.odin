@@ -56,6 +56,10 @@ DrawPushConstants :: struct {
     instance_buffer_addr:   vk.DeviceAddress,
 }
 
+SceneData :: struct {
+    using CameraData
+}
+
 RendererConfig :: struct {
     app_name:                       cstring,
     extent:                         int2,
@@ -87,6 +91,8 @@ Renderer :: struct {
     immediate_command:          vk.CommandBuffer,
     immediate_submit_fence:     vk.Fence,
     descriptor_allocator:       DescriptorAllocator, // Contains descriptor pools to allocate descriptor sets
+    descriptor_layout_builder:  DescriptorLayoutBuilder,
+    descriptor_writer:          DescriptorWriter,
     input_manager:              InputManager,
 
     frame_acquired_image_sem:   []vk.Semaphore, // Semaphore to let the GPU know the swapchain image has been acquired. One per frame
@@ -100,8 +106,8 @@ Renderer :: struct {
 
     renderables:                [dynamic]RenderObject,
     compute_passes:             [dynamic]ComputePass,
-    scene_descriptors:          [dynamic]^DescriptorSet,
-    scene_descriptor_layouts:   [dynamic]vk.DescriptorSetLayout,
+    scene_descriptor:           DescriptorSet,
+    scene_descriptor_layout:    vk.DescriptorSetLayout,
     scene_buffers:              [dynamic]Buffer,
 
     frame_number:               u64,
@@ -198,12 +204,17 @@ renderer_initialize :: proc(renderer: ^Renderer, renderer_cfg: RendererConfig) {
 
     // initialize descriptor allocator
     descriptor_allocator_initialize(renderer, renderer_cfg.initial_descriptor_set_count, pool_size_ratios)
+    renderer.descriptor_layout_builder = descriptor_layout_builder_create()
+    renderer.descriptor_writer = descriptor_writer_create()
 
-    renderer.renderables                = make([dynamic]RenderObject)
-    renderer.compute_passes             = make([dynamic]ComputePass)
-    renderer.scene_descriptors          = make([dynamic]^DescriptorSet)
-    renderer.scene_descriptor_layouts   = make([dynamic]vk.DescriptorSetLayout)
-    renderer.scene_buffers              = make([dynamic]Buffer)
+    // Build the descriptor layout for the global scene descriptors (like camera data, etc)
+    descriptor_layout_builder_add_binding(&renderer.descriptor_layout_builder, 0, .UNIFORM_BUFFER_DYNAMIC, 1, { .VERTEX, .FRAGMENT, .COMPUTE })
+    renderer.scene_descriptor_layout = descriptor_layout_builder_build(&renderer.descriptor_layout_builder, renderer)
+    renderer.scene_descriptor = descriptor_set_create(renderer, { renderer.scene_descriptor_layout })
+
+    renderer.renderables             = make([dynamic]RenderObject)
+    renderer.compute_passes          = make([dynamic]ComputePass)
+    renderer.scene_buffers           = make([dynamic]Buffer)
 
     renderer.render_scale = 1
     renderer.frame_index  = 0
@@ -234,12 +245,14 @@ renderer_shutdown :: proc(renderer: ^Renderer) {
     recorder_destroy(renderer, &renderer.recorder)
 
     delete(renderer.scene_buffers)
-    delete(renderer.scene_descriptor_layouts)
-    delete(renderer.scene_descriptors)
     delete(renderer.renderables)
     delete(renderer.compute_passes)
 
     descriptor_allocator_destroy(renderer)
+    descriptor_layout_builder_destroy(&renderer.descriptor_layout_builder)
+    descriptor_layout_builder_destroy_built_layouts(&renderer.descriptor_layout_builder, renderer)
+    descriptor_writer_destroy(&renderer.descriptor_writer)
+
 
     // immediate command cleanup
     fence_destroy(renderer, renderer.immediate_submit_fence)
@@ -399,17 +412,18 @@ draw :: proc(renderer: ^Renderer) {
         if render_object.material.pipeline != last_pipeline {
             // Then we need to bind the new pipeline
             vk.CmdBindPipeline(cmd, render_object.material.pipeline.bind_point, render_object.material.pipeline.handle)
-            if (len(renderer.scene_descriptors) > 0) {
-                descriptor_set_bind(cmd, render_object.material.pipeline.bind_point, render_object.material.pipeline.layout,
-                    0, renderer.scene_descriptors[:], renderer.frame_index)
-            }
+            // Also bind the global scene descriptor
+            // TODO: This doesn't need to be bound every time a new pipeline is bound. Since all materials will have the same push constants and
+            //       set layouts, we can just bind this once.
+            descriptor_set_bind(cmd, render_object.material.pipeline.bind_point, render_object.material.pipeline.layout,
+                &renderer.scene_descriptor, 0, renderer.frame_index)
             last_pipeline = render_object.material.pipeline
         }
         if render_object.material != last_material {
             // Then we need to bind the new material descriptors (if they exist)
             if render_object.material.descriptor != nil {
                 descriptor_set_bind(cmd, render_object.material.pipeline.bind_point, render_object.material.pipeline.layout,
-                    u32(len(renderer.scene_descriptors)), { render_object.material.descriptor }, renderer.frame_index)
+                    render_object.material.descriptor, 1)
             }
             last_material = render_object.material
         }

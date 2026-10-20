@@ -130,10 +130,7 @@ fluidsim_get_material :: proc(renderer: ^render.Renderer) -> render.MaterialInst
     render.pipeline_cfg_set_depth_attachment_format(&pipeline_cfg, renderer.depth_image.format)
     render.pipeline_cfg_set_depth_test(&pipeline_cfg, .GREATER_OR_EQUAL)
     render.pipeline_cfg_add_push_constant_range(&pipeline_cfg, { .VERTEX }, size_of(render.DrawPushConstants))
-
-    for layout in renderer.scene_descriptor_layouts {
-        render.pipeline_cfg_add_descriptor(&pipeline_cfg, layout)
-    }
+    render.pipeline_cfg_add_descriptor(&pipeline_cfg, renderer.scene_descriptor_layout)
 
     material: render.MaterialInstance
     material.pass_type = .opaque

@@ -208,7 +208,21 @@ descriptor_set_destroy :: proc(set: ^DescriptorSet) {
 }
 
 descriptor_set_bind :: proc(cmd: vk.CommandBuffer, bind_point: vk.PipelineBindPoint,
-    layout: vk.PipelineLayout, first_set: u32, sets: []^DescriptorSet, offset: u32) {
+    layout: vk.PipelineLayout, set: ^DescriptorSet, set_number: u32, offset: u32 = 0) {
+
+    // TODO: use a memory arena to allocate this and speed things up. Same for below
+    offsets := make([]u32, len(set.dynamic_bindings))
+    defer delete(offsets)
+    for binding, i in set.dynamic_bindings {
+        offsets[i] = u32(u64(offset) * binding.alignment)
+    }
+
+    vk.CmdBindDescriptorSets(cmd, bind_point, layout, set_number,
+        1, &set.handle, u32(len(offsets)), len(offsets) > 0 ? &offsets[0] : nil)
+}
+
+descriptor_sets_bind :: proc(cmd: vk.CommandBuffer, bind_point: vk.PipelineBindPoint,
+    layout: vk.PipelineLayout, first_set_number: u32, sets: []^DescriptorSet, offset: u32) {
 
     handles := make([]vk.DescriptorSet, len(sets))
     defer delete(handles)
@@ -225,7 +239,7 @@ descriptor_set_bind :: proc(cmd: vk.CommandBuffer, bind_point: vk.PipelineBindPo
         }
     }
 
-    vk.CmdBindDescriptorSets(cmd, bind_point, layout, first_set,
+    vk.CmdBindDescriptorSets(cmd, bind_point, layout, first_set_number,
         u32(len(sets)), &handles[0], u32(len(offsets)), len(offsets) > 0 ? &offsets[0] : nil)
 }
 

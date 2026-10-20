@@ -15,7 +15,7 @@ ComputePass :: struct {
 compute_resource_bind :: proc(cmd: vk.CommandBuffer, resources: ^ComputeResources, frame_index: u32) {
     vk.CmdBindPipeline(cmd, resources.pipeline.bind_point, resources.pipeline.handle)
     if (len(resources.descriptors) > 0) {
-        descriptor_set_bind(cmd, resources.pipeline.bind_point, resources.pipeline.layout,
+        descriptor_sets_bind(cmd, resources.pipeline.bind_point, resources.pipeline.layout,
             0, resources.descriptors[:], frame_index)
     }
 }
