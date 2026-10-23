@@ -66,7 +66,7 @@ get_test_gltf_material :: proc(renderer: ^render.Renderer, descriptor_layout: vk
     pipeline_cfg := render.pipeline_cfg_create()
     defer render.pipeline_cfg_destroy(&pipeline_cfg)
 
-    shader := render.shader_module_create_from_file(renderer, "test_gltf.slang.spv")
+    shader := render.shader_module_create_from_file(renderer, "basic.slang.spv")
     defer render.shader_module_destroy(renderer, shader)
 
     render.pipeline_cfg_add_shader(&pipeline_cfg, shader, { .VERTEX }, "basic_vertex")
