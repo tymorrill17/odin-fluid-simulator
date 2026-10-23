@@ -93,52 +93,33 @@ get_test_gltf_material :: proc(renderer: ^render.Renderer, descriptor_layout: vk
     return material
 }
 
-get_gradient_compute_pipeline :: proc(renderer: ^render.Renderer, descriptor_layouts: []vk.DescriptorSetLayout,
-    descriptor_sets: []^render.DescriptorSet) -> render.ComputeResources {
-
+get_sky_material :: proc(renderer: ^render.Renderer, descriptor_layout: vk.DescriptorSetLayout, descriptor_set: ^render.DescriptorSet) -> render.MaterialInstance {
     pipeline_cfg := render.pipeline_cfg_create()
     defer render.pipeline_cfg_destroy(&pipeline_cfg)
 
-    shader := render.shader_module_create_from_file(renderer, "sky.slang.spv")
-    defer render.shader_module_destroy(renderer, shader)
+    sky_shader := render.shader_module_create_from_file(renderer, "sky.slang.spv")
+    defer render.shader_module_destroy(renderer, sky_shader)
+    fullscreen_shader := render.shader_module_create_from_file(renderer, "fullscreen_triangle.slang.spv")
+    defer render.shader_module_destroy(renderer, fullscreen_shader)
 
-    render.pipeline_cfg_add_shader(&pipeline_cfg, shader, { .COMPUTE }, "sky_gradient")
-    for layout in descriptor_layouts {
-        render.pipeline_cfg_add_descriptor(&pipeline_cfg, layout)
-    }
-    render.pipeline_cfg_add_push_constant_range(&pipeline_cfg, { .COMPUTE }, size_of(GradientPushConstants))
+    render.pipeline_cfg_add_shader(&pipeline_cfg, fullscreen_shader, { .VERTEX }, "fullscreen_triangle")
+    render.pipeline_cfg_add_shader(&pipeline_cfg, sky_shader, { .FRAGMENT }, "sky_gradient")
+    render.pipeline_cfg_set_input_topology(&pipeline_cfg, .TRIANGLE_LIST)
+    render.pipeline_cfg_set_polygon_mode(&pipeline_cfg, .FILL)
+    render.pipeline_cfg_set_cull_mode(&pipeline_cfg, {}, .CLOCKWISE)
+    render.pipeline_cfg_set_multisampling(&pipeline_cfg, { ._1 })
+    render.pipeline_cfg_set_blending(&pipeline_cfg, .NONE)
+    render.pipeline_cfg_set_color_attachment_format(&pipeline_cfg, renderer.draw_image.format)
+    render.pipeline_cfg_set_depth_attachment_format(&pipeline_cfg, renderer.depth_image.format)
+    render.pipeline_cfg_set_depth_test(&pipeline_cfg, .NEVER)
+    render.pipeline_cfg_add_descriptor(&pipeline_cfg, descriptor_layout)
 
-    pipeline := render.pipeline_cfg_build_compute_pipeline(&pipeline_cfg, renderer)
-    return render.compute_resources_create(pipeline, descriptor_sets)
-}
+    material: render.MaterialInstance
+    material.pass_type = .opaque
+    material.descriptor = descriptor_set
 
-GradientData :: struct {
-    resources: ^render.ComputeResources,
-    background_texture: ^render.Image,
-}
-
-GradientPushConstants :: struct {
-    image_extent: render.uint2
-}
-
-gradient_dispatch :: proc(cmd: vk.CommandBuffer, renderer: ^render.Renderer, data: rawptr) {
-    gradient_data := (^GradientData)(data)
-    render.compute_resource_bind(cmd, gradient_data.resources, renderer.frame_index)
-    extent := renderer.draw_extent
-    push_constants := GradientPushConstants{ image_extent = { extent.width, extent.height } }
-    pipeline := gradient_data.resources.pipeline
-    vk.CmdPushConstants(cmd, pipeline.layout, pipeline.push_constant_stages, 0, size_of(GradientPushConstants), &push_constants)
-    // TODO: Should I hard-code the number of threads here?
-    vk.CmdDispatch(cmd, (extent.width + 15) / 16, (extent.height + 15) / 16, 1)
-
-    // Copy the result into the draw image
-    render.image_transition(cmd, gradient_data.background_texture, .TRANSFER_SRC_OPTIMAL)
-    render.image_transition(cmd, &renderer.draw_image, .TRANSFER_DST_OPTIMAL)
-    render.image_copy_subimage(cmd, gradient_data.background_texture^, renderer.draw_extent, renderer.draw_image, renderer.draw_extent)
-
-    // Restore the layouts the rest of the frame expects
-    render.image_transition(cmd, &renderer.draw_image, .GENERAL)
-    render.image_transition(cmd, gradient_data.background_texture, .GENERAL)
+    material.pipeline = render.pipeline_cfg_build_pipeline(&pipeline_cfg, renderer)
+    return material
 }
 
 main :: proc() {
@@ -224,23 +205,9 @@ main :: proc() {
     fluidsim_particle_system.motion = fluidsim_state_create(&fluidsim_particle_system, &particle_config, &physics_config, &bounding_box)
     defer render.particle_system_destroy(&fluidsim_particle_system, &r)
 
-    // Create the background texture that the gradient compute shader will write to
-    background_texture := render.image_create_device(&r, r.draw_image.extent, .R16G16B16A16_SFLOAT, { .TRANSFER_SRC, .COLOR_ATTACHMENT, .STORAGE})
-    defer render.image_destroy(&r, &background_texture)
-    render.image_transition_now(&r, &background_texture, .GENERAL)
-    render.descriptor_layout_builder_add_binding(&r.descriptor_layout_builder, 0, .STORAGE_IMAGE, 1, { .COMPUTE })
-    background_texture_desc_layout := render.descriptor_layout_builder_build(&r.descriptor_layout_builder, &r)
-    background_texture_set := render.descriptor_set_create(&r, { background_texture_desc_layout })
-    defer render.descriptor_set_destroy(&background_texture_set)
-    render.descriptor_writer_add_images(&r.descriptor_writer, background_texture_set.handle, 0, { background_texture }, .STORAGE_IMAGE)
-    render.descriptor_writer_update_sets(&r.descriptor_writer, &r)
-
-    gradient_resources := get_gradient_compute_pipeline(&r, { r.scene_descriptor_layout, background_texture_desc_layout }, { &r.scene_descriptor, &background_texture_set })
-    gradient_data := GradientData{
-        resources = &gradient_resources,
-        background_texture = &background_texture,
-    }
-    defer render.compute_resources_destroy(&r, &gradient_resources)
+    r.background_type = .FragmentShader
+    r.background_material = get_sky_material(&r, r.scene_descriptor_layout, &r.scene_descriptor)
+    defer render.pipeline_destroy(&r, &r.background_material.pipeline) // TODO: make this more opaque to application, destroy from within renderer_destroy
 
     // Create custom test textures and their samplers
     pack_unorm4x8 :: proc(v: [4]f32) -> u32 {
@@ -297,12 +264,9 @@ main :: proc() {
 
     monkey_material := get_test_gltf_material(&r, texture_descriptor_layout, &texture_descriptor)
     defer render.pipeline_destroy(&r, &monkey_material.pipeline)
-
     monkey_pos := render.float3{ 0, 10, 7}
 
     recording_timer := render.timer_create()
-    r.clear_draw_image = false
-
     for !render.window_should_close(&r) {
         clear(&r.renderables) // TODO: As I think about this more, potentially clean this up
         clear(&r.compute_passes)
@@ -394,8 +358,6 @@ main :: proc() {
 
         // Update fluidsim particles.
         render.particle_system_update(&fluidsim_particle_system, &r, r.frame_time)
-
-        append(&r.compute_passes, render.ComputePass{ data = &gradient_data, dispatch = gradient_dispatch })
 
         // Get the renderables
         render.particle_system_get_render_object(&fluidsim_particle_system, &r.renderables)

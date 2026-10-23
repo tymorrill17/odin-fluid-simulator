@@ -69,6 +69,12 @@ RendererConfig :: struct {
     initial_descriptor_set_count:   uint,
 }
 
+SkyType :: enum {
+    Skybox,
+    FragmentShader,
+    SolidColor,
+}
+
 Renderer :: struct {
     window:                     Window,
     instance:                   vk.Instance,
@@ -108,7 +114,9 @@ Renderer :: struct {
     compute_passes:             [dynamic]ComputePass,
     scene_descriptor:           DescriptorSet,
     scene_descriptor_layout:    vk.DescriptorSetLayout,
-    scene_buffers:              [dynamic]Buffer,
+
+    background_material:        MaterialInstance,
+    background_type:            SkyType,
 
     frame_number:               u64,
     frame_index:                u32,
@@ -214,7 +222,6 @@ renderer_initialize :: proc(renderer: ^Renderer, renderer_cfg: RendererConfig) {
 
     renderer.renderables             = make([dynamic]RenderObject)
     renderer.compute_passes          = make([dynamic]ComputePass)
-    renderer.scene_buffers           = make([dynamic]Buffer)
 
     renderer.render_scale = 1
     renderer.frame_index  = 0
@@ -235,6 +242,7 @@ renderer_initialize :: proc(renderer: ^Renderer, renderer_cfg: RendererConfig) {
     gui_initialize(renderer)
     renderer.draw_gui = true
     renderer.clear_draw_image = true
+    renderer.background_type = .SolidColor
 }
 
 renderer_shutdown :: proc(renderer: ^Renderer) {
@@ -244,13 +252,12 @@ renderer_shutdown :: proc(renderer: ^Renderer) {
 
     recorder_destroy(renderer, &renderer.recorder)
 
-    delete(renderer.scene_buffers)
     delete(renderer.renderables)
     delete(renderer.compute_passes)
 
     descriptor_allocator_destroy(renderer)
-    descriptor_layout_builder_destroy(&renderer.descriptor_layout_builder)
     descriptor_layout_builder_destroy_built_layouts(&renderer.descriptor_layout_builder, renderer)
+    descriptor_layout_builder_destroy(&renderer.descriptor_layout_builder)
     descriptor_writer_destroy(&renderer.descriptor_writer)
 
 
@@ -398,6 +405,20 @@ draw :: proc(renderer: ^Renderer) {
 
     vk.CmdSetViewport(cmd, 0, 1, &viewport)
     vk.CmdSetScissor(cmd, 0, 1, &scissor)
+
+    // First, draw the background image
+    switch renderer.background_type {
+    case .Skybox:
+        // TODO: Not implemented yet
+    case .FragmentShader:
+        vk.CmdBindPipeline(cmd, renderer.background_material.pipeline.bind_point, renderer.background_material.pipeline.handle)
+        descriptor_set_bind(cmd, renderer.background_material.pipeline.bind_point, renderer.background_material.pipeline.layout,
+            &renderer.scene_descriptor, 0, renderer.frame_index)
+
+        vk.CmdDraw(cmd, 3, 1, 0, 0)
+    case .SolidColor:
+        // Don't do any drawing here
+    }
 
     // Sort render objects so minimize pipeline and descriptor rebinds
     // TODO: make this more robust
