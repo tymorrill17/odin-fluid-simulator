@@ -3,13 +3,29 @@ package render
 import vk "vendor:vulkan"
 import "core:log"
 import "core:mem/virtual"
+import "core:slice"
 
 MAX_SETS_PER_POOL :: 4096
+MAX_CACHED_LAYOUT_BINDINGS :: 16 // max bindings a layout can have
 
 PoolSizeRatio :: struct {
     type:  vk.DescriptorType,
     ratio: f32
 }
+
+pool_size_ratios :: []PoolSizeRatio{
+    {vk.DescriptorType.SAMPLER,                 0.5},
+    {vk.DescriptorType.COMBINED_IMAGE_SAMPLER,  4},
+    {vk.DescriptorType.SAMPLED_IMAGE,           4},
+    {vk.DescriptorType.STORAGE_IMAGE,           1},
+    {vk.DescriptorType.UNIFORM_TEXEL_BUFFER,    1},
+    {vk.DescriptorType.STORAGE_TEXEL_BUFFER,    1},
+    {vk.DescriptorType.UNIFORM_BUFFER,          2},
+    {vk.DescriptorType.STORAGE_BUFFER,          2},
+    {vk.DescriptorType.UNIFORM_BUFFER_DYNAMIC,  1},
+    {vk.DescriptorType.STORAGE_BUFFER_DYNAMIC,  1},
+    {vk.DescriptorType.INPUT_ATTACHMENT,        0.5},
+};
 
 DescriptorDynamicBinding :: struct {
     binding:    u32,
@@ -22,38 +38,42 @@ DescriptorSet :: struct {
 }
 
 // Descriptor Layout Builder
+DescriptorLayoutInfo :: struct {
+    bindings:       [MAX_CACHED_LAYOUT_BINDINGS]vk.DescriptorSetLayoutBinding,
+    binding_count:  u32
+}
 
 DescriptorLayoutBuilder :: struct {
-    bindings:       [dynamic]vk.DescriptorSetLayoutBinding,
-    built_layouts:  [dynamic]vk.DescriptorSetLayout,
+    layout_info:    DescriptorLayoutInfo,
+    layout_cache:   map[DescriptorLayoutInfo]vk.DescriptorSetLayout,
 }
 
 descriptor_layout_builder_create :: proc() -> DescriptorLayoutBuilder {
     builder: DescriptorLayoutBuilder
-    builder.bindings        = make([dynamic]vk.DescriptorSetLayoutBinding)
-    builder.built_layouts   = make([dynamic]vk.DescriptorSetLayout)
+    builder.layout_info = {} // This is important for mapping consistency
+    builder.layout_cache = make(map[DescriptorLayoutInfo]vk.DescriptorSetLayout)
     return builder
 }
 
-// Destroy DescriptorLayoutBuilder, freeing associated memory. NOTE: destroying the builder does not destroy
-// the built layouts; you'll have to call that separately
-descriptor_layout_builder_destroy :: proc(builder: ^DescriptorLayoutBuilder) {
-    delete(builder.bindings)
-    delete(builder.built_layouts)
+// Destroy DescriptorLayoutBuilder, freeing associated memory.
+descriptor_layout_builder_destroy :: proc(builder: ^DescriptorLayoutBuilder, renderer: ^Renderer) {
+    descriptor_layout_builder_clear_cache(builder, renderer)
+    delete(builder.layout_cache)
     builder^ = {}
 }
 
-// Destroy all descriptor set layouts built by the builder.
-descriptor_layout_builder_destroy_built_layouts :: proc(builder: ^DescriptorLayoutBuilder, renderer: ^Renderer) {
-    for layout in builder.built_layouts {
+// Destroy all descriptor set layouts built by the builder currently in the cache.
+descriptor_layout_builder_clear_cache :: proc(builder: ^DescriptorLayoutBuilder, renderer: ^Renderer) {
+    for _, layout in builder.layout_cache {
         vk.DestroyDescriptorSetLayout(renderer.logical_device, layout, nil)
     }
-    clear(&builder.built_layouts)
+    clear(&builder.layout_cache)
 }
 
 descriptor_layout_builder_add_binding :: proc(builder: ^DescriptorLayoutBuilder,
     binding: u32, descriptor_type: vk.DescriptorType, descriptor_count: uint, shader_stage: vk.ShaderStageFlags) {
 
+    assert(builder.layout_info.binding_count <= MAX_CACHED_LAYOUT_BINDINGS, "Too many descriptor set layout bindings. Going out of bounds in the DescriptorLayoutInfo struct.")
     new_binding := vk.DescriptorSetLayoutBinding{
 		binding         = binding,
 		descriptorType  = descriptor_type,
@@ -61,31 +81,41 @@ descriptor_layout_builder_add_binding :: proc(builder: ^DescriptorLayoutBuilder,
 		stageFlags      = shader_stage
 	}
 
-    append(&builder.bindings, new_binding)
+    builder.layout_info.bindings[builder.layout_info.binding_count] = new_binding
+    builder.layout_info.binding_count += 1
 }
 
 descriptor_layout_builder_build :: proc(builder: ^DescriptorLayoutBuilder, renderer: ^Renderer) -> vk.DescriptorSetLayout {
-    set_layout: vk.DescriptorSetLayout
+    slice.sort_by(builder.layout_info.bindings[:builder.layout_info.binding_count], proc(a, b: vk.DescriptorSetLayoutBinding) -> bool {
+        return a.binding < b.binding
+    })
 
+    // Check to see if the layout is already in the cache
+    set_layout, ok := builder.layout_cache[builder.layout_info]
+    if ok {
+        builder.layout_info = {}
+        return set_layout
+    }
+
+    // Otherwise, create it and add it to the cache
 	descriptor_set_layout_info := vk.DescriptorSetLayoutCreateInfo{
 		sType           = vk.StructureType.DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 		pNext           = nil,
 		flags           = { },
-		bindingCount    = cast(u32)len(builder.bindings),
-		pBindings       = raw_data(builder.bindings[:]),
+		bindingCount    = builder.layout_info.binding_count,
+		pBindings       = raw_data(builder.layout_info.bindings[:]),
 	};
 
     if vk.CreateDescriptorSetLayout(renderer.logical_device, &descriptor_set_layout_info, nil, &set_layout) != .SUCCESS {
         log.panic("Failed to create descriptor set layout!")
     }
-    clear(&builder.bindings) // Clear bindings for next build
-    append(&builder.built_layouts, set_layout) // Store the new layout in the destruction arena
+    builder.layout_cache[builder.layout_info] = set_layout // Add to the cache
+    builder.layout_info = {} // Clear the layout info
     return set_layout
 }
 
 // Descriptor Allocator
 
-// TODO: consider having a global descriptor pool and a per-frame one?
 // Dynamic descriptor pool management structure
 DescriptorAllocator :: struct {
     pool_size_ratios:   [dynamic]PoolSizeRatio,

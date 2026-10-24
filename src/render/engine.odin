@@ -42,14 +42,6 @@ fifo_latest_ready_feature := vk.PhysicalDevicePresentModeFifoLatestReadyFeatures
     presentModeFifoLatestReady = true
 }
 
-pool_size_ratios :: []PoolSizeRatio{
-    {vk.DescriptorType.UNIFORM_BUFFER,         100},
-    {vk.DescriptorType.UNIFORM_BUFFER_DYNAMIC, 100},
-    {vk.DescriptorType.STORAGE_BUFFER,         100},
-    {vk.DescriptorType.STORAGE_IMAGE,          100},
-    {vk.DescriptorType.COMBINED_IMAGE_SAMPLER, 100},
-};
-
 DrawPushConstants :: struct {
     world_matrix:           float4x4,
     vertex_buffer_addr:     vk.DeviceAddress,
@@ -259,10 +251,8 @@ renderer_shutdown :: proc(renderer: ^Renderer) {
     delete(renderer.compute_passes)
 
     descriptor_allocator_destroy(renderer)
-    descriptor_layout_builder_destroy_built_layouts(&renderer.descriptor_layout_builder, renderer)
-    descriptor_layout_builder_destroy(&renderer.descriptor_layout_builder)
+    descriptor_layout_builder_destroy(&renderer.descriptor_layout_builder, renderer)
     descriptor_writer_destroy(&renderer.descriptor_writer)
-
 
     // immediate command cleanup
     fence_destroy(renderer, renderer.immediate_submit_fence)
