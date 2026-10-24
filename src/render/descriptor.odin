@@ -264,12 +264,11 @@ descriptor_writer_destroy :: proc(writer: ^DescriptorWriter) {
     writer^ = {}
 }
 
-descriptor_writer_add_images :: proc(writer: ^DescriptorWriter, set: vk.DescriptorSet, binding: uint, images: []Image, type: vk.DescriptorType, set_index: uint = 0) {
+descriptor_writer_add_images :: proc(writer: ^DescriptorWriter, set: ^DescriptorSet, binding: uint, images: []Image, type: vk.DescriptorType) {
     writer_allocator := virtual.arena_allocator(&writer.arena)
     image_infos := make([]vk.DescriptorImageInfo, len(images), writer_allocator)
     for image, i in images {
         image_infos[i] = vk.DescriptorImageInfo{
-            sampler     = image.sampler,
             imageView   = image.view,
             imageLayout = image.layout,
         }
@@ -277,10 +276,34 @@ descriptor_writer_add_images :: proc(writer: ^DescriptorWriter, set: vk.Descript
 
     write := vk.WriteDescriptorSet{
         sType           = vk.StructureType.WRITE_DESCRIPTOR_SET,
-        dstSet          = set,
+        dstSet          = set.handle,
         dstBinding      = u32(binding),
-        dstArrayElement = u32(set_index),
+        dstArrayElement = 0,
         descriptorCount = u32(len(images)),
+        descriptorType  = type,
+        pImageInfo      = raw_data(image_infos),
+    }
+
+    append(&writer.writes, write)
+}
+
+descriptor_writer_add_textures :: proc(writer: ^DescriptorWriter, set: ^DescriptorSet, binding: uint, textures: []Texture, type: vk.DescriptorType) {
+    writer_allocator := virtual.arena_allocator(&writer.arena)
+    image_infos := make([]vk.DescriptorImageInfo, len(textures), writer_allocator)
+    for texture, i in textures {
+        image_infos[i] = vk.DescriptorImageInfo{
+            imageView   = texture.view,
+            imageLayout = texture.layout,
+            sampler     = texture.sampler,
+        }
+    }
+
+    write := vk.WriteDescriptorSet{
+        sType           = vk.StructureType.WRITE_DESCRIPTOR_SET,
+        dstSet          = set.handle,
+        dstBinding      = u32(binding),
+        dstArrayElement = 0,
+        descriptorCount = u32(len(textures)),
         descriptorType  = type,
         pImageInfo      = raw_data(image_infos),
     }

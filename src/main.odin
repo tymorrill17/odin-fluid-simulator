@@ -231,6 +231,7 @@ main :: proc() {
     }
 
     // Create the sampler
+    // TODO: sampler cache
     sampler_nearest, sampler_linear: vk.Sampler
 
     sampler_info := vk.SamplerCreateInfo{ sType = vk.StructureType.SAMPLER_CREATE_INFO, }
@@ -245,21 +246,21 @@ main :: proc() {
         vk.DestroySampler(r.logical_device, sampler_linear, nil)
     }
 
-    white_texture := render.image_create_texture_from_data(&r, &white, vk.Extent3D{ 1, 1, 1 }, sampler_nearest, .R8G8B8A8_UNORM, { .SAMPLED })
-    black_texture := render.image_create_texture_from_data(&r, &black, vk.Extent3D{ 1, 1, 1 }, sampler_nearest, .R8G8B8A8_UNORM, { .SAMPLED })
-    grey_texture  := render.image_create_texture_from_data(&r, &grey,  vk.Extent3D{ 1, 1, 1 }, sampler_nearest, .R8G8B8A8_UNORM, { .SAMPLED })
-    error_texture := render.image_create_texture_from_data(&r, &error_pixels, vk.Extent3D{ 16, 16, 1 }, sampler_nearest, .R8G8B8A8_UNORM, { .SAMPLED })
+    white_texture := render.texture_create_from_data(&r, &white, vk.Extent3D{ 1, 1, 1 }, sampler_nearest, .R8G8B8A8_UNORM, { .SAMPLED })
+    black_texture := render.texture_create_from_data(&r, &black, vk.Extent3D{ 1, 1, 1 }, sampler_nearest, .R8G8B8A8_UNORM, { .SAMPLED })
+    grey_texture  := render.texture_create_from_data(&r, &grey,  vk.Extent3D{ 1, 1, 1 }, sampler_nearest, .R8G8B8A8_UNORM, { .SAMPLED })
+    error_texture := render.texture_create_from_data(&r, &error_pixels, vk.Extent3D{ 16, 16, 1 }, sampler_nearest, .R8G8B8A8_UNORM, { .SAMPLED })
     defer {
-        render.image_destroy(&r, &white_texture)
-        render.image_destroy(&r, &black_texture)
-        render.image_destroy(&r, &grey_texture)
-        render.image_destroy(&r, &error_texture)
+        render.texture_destroy(&r, &white_texture)
+        render.texture_destroy(&r, &black_texture)
+        render.texture_destroy(&r, &grey_texture)
+        render.texture_destroy(&r, &error_texture)
     }
 
     render.descriptor_layout_builder_add_binding(&r.descriptor_layout_builder, 0, .COMBINED_IMAGE_SAMPLER, 1, { .FRAGMENT })
     texture_descriptor_layout := render.descriptor_layout_builder_build(&r.descriptor_layout_builder, &r)
     texture_descriptor := render.descriptor_set_create(&r, { texture_descriptor_layout })
-    render.descriptor_writer_add_images(&r.descriptor_writer, texture_descriptor.handle, 0, { error_texture }, .COMBINED_IMAGE_SAMPLER)
+    render.descriptor_writer_add_textures(&r.descriptor_writer, &texture_descriptor, 0, { error_texture }, .COMBINED_IMAGE_SAMPLER)
     render.descriptor_writer_update_sets(&r.descriptor_writer, &r)
 
     monkey_material := get_test_gltf_material(&r, texture_descriptor_layout, &texture_descriptor)

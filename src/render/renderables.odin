@@ -55,6 +55,90 @@ MeshVertex :: struct {
     color:      float4,
 };
 
+MaterialMetallicRoughnessGLTF :: struct {
+    opaque_pipeline:        Pipeline,
+    transparent_pipeline:   Pipeline,
+    set_layout:             vk.DescriptorSetLayout,
+    set:                    DescriptorSet,
+
+    constants: struct {
+        color_factors:          float4,
+        metal_rough_factors:    float4,
+        extra_padding:          [14]float4,
+    },
+
+    resources: struct {
+        color_texture:           Texture,
+        metal_rough_texture:     Texture,
+        constants_buffer:        Buffer,
+    },
+}
+
+
+material_metallic_roughness_create :: proc(renderer: ^Renderer, color_texture: Texture, metal_rough_texture: Texture) -> MaterialMetallicRoughnessGLTF {
+
+    material_metallic_roughness_build_pipelines :: proc(renderer: ^Renderer, material: ^MaterialMetallicRoughnessGLTF) {
+        pipeline_cfg := pipeline_cfg_create()
+        defer pipeline_cfg_destroy(&pipeline_cfg)
+
+        shader := shader_module_create_from_file(renderer, "gltf_metallic_roughness.slang.spv")
+        defer shader_module_destroy(renderer, shader)
+
+        pipeline_cfg_add_shader(&pipeline_cfg, shader, { .VERTEX }, "vertex_main")
+        pipeline_cfg_add_shader(&pipeline_cfg, shader, { .FRAGMENT }, "fragment_main")
+        pipeline_cfg_add_push_constant_range(&pipeline_cfg, { .VERTEX, }, size_of(DrawPushConstants))
+
+        pipeline_cfg_add_descriptor(&pipeline_cfg, renderer.scene_descriptor_layout)
+        pipeline_cfg_add_descriptor(&pipeline_cfg, material.set_layout)
+
+        pipeline_cfg_set_input_topology(&pipeline_cfg, .TRIANGLE_LIST)
+        pipeline_cfg_set_polygon_mode(&pipeline_cfg, .FILL)
+        pipeline_cfg_set_cull_mode(&pipeline_cfg, {}, .COUNTER_CLOCKWISE)
+        pipeline_cfg_set_multisampling(&pipeline_cfg, { ._1 })
+        pipeline_cfg_set_blending(&pipeline_cfg, .NONE)
+        pipeline_cfg_set_depth_test(&pipeline_cfg, .GREATER_OR_EQUAL)
+        pipeline_cfg_set_color_attachment_format(&pipeline_cfg, renderer.draw_image.format)
+        pipeline_cfg_set_depth_attachment_format(&pipeline_cfg, renderer.depth_image.format)
+        material.opaque_pipeline = pipeline_cfg_build_pipeline(&pipeline_cfg, renderer)
+
+        pipeline_cfg_set_blending(&pipeline_cfg, .ADDITIVE)
+        pipeline_cfg_set_depth_test(&pipeline_cfg, .NEVER)
+        material.transparent_pipeline = pipeline_cfg_build_pipeline(&pipeline_cfg, renderer)
+    }
+
+    material: MaterialMetallicRoughnessGLTF
+    material.resources.color_texture = color_texture
+    material.resources.metal_rough_texture = metal_rough_texture
+
+    material.resources.constants_buffer = buffer_create(renderer, size_of(material.constants), 1, { .UNIFORM_BUFFER }, .AUTO_PREFER_DEVICE)
+    material.constants.color_factors = { 1, 1, 1, 1 }
+    material.constants.metal_rough_factors = { 1, 0.5, 0, 0 }
+
+    buffer_write_data(renderer, &material.resources.constants_buffer, &material.constants, size_of(material.constants))
+
+    descriptor_layout_builder_add_binding(&renderer.descriptor_layout_builder, 0, .UNIFORM_BUFFER, 1, { .VERTEX, .FRAGMENT })
+    descriptor_layout_builder_add_binding(&renderer.descriptor_layout_builder, 1, .COMBINED_IMAGE_SAMPLER, 1, { .VERTEX, .FRAGMENT })
+    descriptor_layout_builder_add_binding(&renderer.descriptor_layout_builder, 2, .COMBINED_IMAGE_SAMPLER, 1, { .VERTEX, .FRAGMENT })
+    material.set_layout = descriptor_layout_builder_build(&renderer.descriptor_layout_builder, renderer)
+    material.set = descriptor_set_create(renderer, { material.set_layout })
+
+    descriptor_writer_add_buffers(&renderer.descriptor_writer, &material.set, 0,
+        { material.resources.constants_buffer }, .UNIFORM_BUFFER)
+    descriptor_writer_add_images(&renderer.descriptor_writer, &material.set, 1,
+        { material.resources.color_texture.image }, .COMBINED_IMAGE_SAMPLER)
+    descriptor_writer_add_images(&renderer.descriptor_writer, &material.set, 2,
+        { material.resources.metal_rough_texture.image }, .COMBINED_IMAGE_SAMPLER)
+    descriptor_writer_update_sets(&renderer.descriptor_writer, renderer)
+
+    material_metallic_roughness_build_pipelines(renderer, &material)
+
+    return material
+}
+
+material_metallic_roughness_destroy :: proc(material: ^MaterialMetallicRoughnessGLTF, renderer: ^Renderer) {
+
+}
+
 // Send vertex and index data to the GPU by creating buffers and writing to them. Returns the created buffers.
 @(private)
 mesh_upload_to_GPU :: proc(renderer: ^Renderer, vertices: []MeshVertex, indices: []u32) -> MeshBuffers {

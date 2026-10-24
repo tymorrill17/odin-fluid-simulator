@@ -1,4 +1,4 @@
-import common_types;
+import "modules/common_types";
 
 struct ParticleInstance {
     float3 position;

@@ -8,7 +8,6 @@ import "core:log"
 Image :: struct {
     handle:         vk.Image,
     view:           vk.ImageView,
-    sampler:        vk.Sampler,
     allocation:     vma.Allocation, // if nil, then the image has or needs no allocation
 
     layout:         vk.ImageLayout,
@@ -20,6 +19,11 @@ Image :: struct {
     mem_flags:      vma.AllocationCreateFlags,
     mem_usage:      vma.MemoryUsage,
     mip_levels:     u32,
+}
+
+Texture :: struct {
+    using image: Image,
+    sampler: vk.Sampler
 }
 
 @(private="file")
@@ -95,16 +99,21 @@ image_create_host :: proc(renderer: ^Renderer, extent: vk.Extent3D, format: vk.F
 }
 
 // Creates a device-only image that will be used for texture purposes
-image_create_texture :: proc(renderer: ^Renderer, extent: vk.Extent3D, sampler: vk.Sampler, format: vk.Format, usage: vk.ImageUsageFlags, use_mipmaps: bool = false) -> Image {
-    new_texture := image_create_private(renderer, extent, format, usage, .OPTIMAL, .AUTO, {}, use_mipmaps)
+texture_create :: proc(renderer: ^Renderer, extent: vk.Extent3D, sampler: vk.Sampler, format: vk.Format, usage: vk.ImageUsageFlags, use_mipmaps: bool = false) -> Texture {
+    new_texture: Texture
+    new_texture.image = image_create_private(renderer, extent, format, usage, .OPTIMAL, .AUTO, {}, use_mipmaps)
     new_texture.sampler = sampler
     return new_texture
 }
 
-image_create_texture_from_data :: proc(renderer: ^Renderer, data: rawptr, extent: vk.Extent3D, sampler: vk.Sampler, format: vk.Format, usage: vk.ImageUsageFlags, use_mipmaps: bool = false) -> Image {
-    new_texture := image_create_texture(renderer, extent, sampler, format, usage + { .TRANSFER_DST }, use_mipmaps)
-    image_copy_data_to_image_now(renderer, &new_texture, data, 4) // bytes per pixel; the proc multiplies by the extent
+texture_create_from_data :: proc(renderer: ^Renderer, data: rawptr, extent: vk.Extent3D, sampler: vk.Sampler, format: vk.Format, usage: vk.ImageUsageFlags, use_mipmaps: bool = false) -> Texture {
+    new_texture := texture_create(renderer, extent, sampler, format, usage + { .TRANSFER_DST }, use_mipmaps)
+    image_copy_data_to_image_now(renderer, &new_texture.image, data, 4) // bytes per pixel; the proc multiplies by the extent
     return new_texture
+}
+
+texture_destroy :: proc(renderer: ^Renderer, texture: ^Texture) {
+    image_destroy(renderer, &texture.image)
 }
 
 image_recreate :: proc(renderer: ^Renderer, image: ^Image, extent: vk.Extent3D) {
