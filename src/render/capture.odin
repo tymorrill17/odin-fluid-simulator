@@ -33,9 +33,9 @@ recorder_initialize :: proc(renderer: ^Renderer, recorder: ^Recorder) {
         resolution = { renderer.draw_image.extent.width, renderer.draw_image.extent.height }
     }
     recorder.capture_buffers = make([]Buffer, renderer.frames_in_flight)
-    buffer_size := image_get_size(renderer.draw_image.extent)
+    buffer_size := image_get_size(renderer.draw_image)
     for &buffer in recorder.capture_buffers {
-        buffer = buffer_create(renderer, buffer_size, 1, { .TRANSFER_DST }, .GPU_TO_CPU)
+        buffer = buffer_create(renderer, buffer_size, 1, { .TRANSFER_DST }, .CPU_READ)
     }
 }
 
@@ -48,10 +48,10 @@ recorder_destroy :: proc(renderer: ^Renderer, recorder: ^Recorder) {
 }
 
 recorder_resize_buffers :: proc(renderer: ^Renderer, recorder: ^Recorder) {
-    new_size := image_get_size(renderer.draw_image.extent)
+    new_size := image_get_size(renderer.draw_image)
     for &buffer in recorder.capture_buffers {
         buffer_destroy(renderer, &buffer)
-        buffer = buffer_create(renderer, new_size, 1, { .TRANSFER_DST }, .GPU_TO_CPU)
+        buffer = buffer_create(renderer, new_size, 1, { .TRANSFER_DST }, .CPU_READ)
     }
 }
 
@@ -87,6 +87,8 @@ capture_screenshot :: proc(renderer: ^Renderer) {
     free_all(context.temp_allocator)
 }
 
+// TODO: Draw image is the maximum size it will ever need, but the entire thing is not being drawn to. Only
+//       capture the part of the drwa image that is being utilized
 @(private)
 capture_copy_image :: proc(cmd: vk.CommandBuffer, renderer: ^Renderer) {
     draw_image := &renderer.draw_image
@@ -124,7 +126,7 @@ capture_copy_image_now :: proc(renderer: ^Renderer) {
     if capture_extent != recorder_res {
         if renderer.recorder.recording do capture_end_recording(renderer)
         buffer_destroy(renderer, capture_buffer)
-        capture_buffer^ = buffer_create(renderer, image_get_size(capture_extent), 1, { .TRANSFER_DST }, .GPU_TO_CPU)
+        capture_buffer^ = buffer_create(renderer, image_get_size(renderer.draw_image), 1, { .TRANSFER_DST }, .CPU_READ)
     }
 
     // Copy the draw image to the capture_buffer buffer
@@ -246,7 +248,7 @@ capture_send_recorded_image :: proc(renderer: ^Renderer) {
     capture_buffer := &renderer.recorder.capture_buffers[renderer.frame_index]
     capture_extent: vk.Extent3D = renderer.draw_image.extent
 
-    total_bytes := int(image_get_size(capture_extent))
+    total_bytes := int(image_get_size(renderer.draw_image))
     image_data_ptr := mem.slice_ptr((^u8)(capture_buffer.data_ptr), total_bytes)
 
     // Pipe writes go short as soon as the pipe buffer fills, which at 8 MB a frame is

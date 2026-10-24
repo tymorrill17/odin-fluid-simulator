@@ -59,7 +59,7 @@ particle_system_create :: proc(renderer: ^Renderer, max_particles: u32, origin: 
     system.particle_buffer_addrs = make([]vk.DeviceAddress, renderer.frames_in_flight)
 
     for i in 0..<renderer.frames_in_flight {
-        system.particle_buffers[i] = buffer_create(renderer, size_of(ParticleInstance), u64(max_particles), { .STORAGE_BUFFER, .SHADER_DEVICE_ADDRESS }, .CPU_TO_GPU)
+        system.particle_buffers[i] = buffer_create(renderer, size_of(ParticleInstance), u64(max_particles), { .STORAGE_BUFFER, .SHADER_DEVICE_ADDRESS }, .CPU_WRITE)
         addr_info := vk.BufferDeviceAddressInfo{
             sType  = vk.StructureType.BUFFER_DEVICE_ADDRESS_INFO,
             buffer = system.particle_buffers[i].handle,

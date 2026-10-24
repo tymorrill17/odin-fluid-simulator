@@ -16,9 +16,6 @@ Image :: struct {
     format:         vk.Format,
     aspect_flags:   vk.ImageAspectFlags,
     usage_flags:    vk.ImageUsageFlags, // only needed for images with an allocation
-    tiling:         vk.ImageTiling,
-    mem_flags:      vma.AllocationCreateFlags,
-    mem_usage:      vma.MemoryUsage,
     mip_levels:     u32,
 }
 
@@ -28,20 +25,31 @@ Texture :: struct {
 }
 
 @(private="file")
-image_create_private :: proc(renderer: ^Renderer, extent: vk.Extent3D, format: vk.Format,
-    usage: vk.ImageUsageFlags, tiling: vk.ImageTiling, mem_usage: vma.MemoryUsage,
-    mem_flags: vma.AllocationCreateFlags, use_mipmap: bool = false) -> Image {
+format_aspect_flags :: proc(format: vk.Format) -> vk.ImageAspectFlags {
+    #partial switch format {
+    case .D16_UNORM, .X8_D24_UNORM_PACK32, .D32_SFLOAT:
+        return { .DEPTH }
+    case .D16_UNORM_S8_UINT, .D24_UNORM_S8_UINT, .D32_SFLOAT_S8_UINT:
+        return { .DEPTH, .STENCIL }
+    case .S8_UINT:
+        return { .STENCIL }
+    case:
+        return { .COLOR }
+    }
+}
+
+// Create an image using device-local memory.
+// To move data in and out, use a CPU_WRITE/READ buffer. The image tiling will have to change.
+image_create :: proc(renderer: ^Renderer, extent: vk.Extent3D, format: vk.Format,
+    usage: vk.ImageUsageFlags, use_mipmaps: bool = false) -> Image {
 
     new_image := Image{
         layout          = .UNDEFINED,
         extent          = extent,
         format          = format,
-        aspect_flags    = format == vk.Format.D32_SFLOAT ? { .DEPTH } : { .COLOR },
+        aspect_flags    = format_aspect_flags(format),
         usage_flags     = usage,
-        tiling          = tiling,
-        mem_flags       = mem_flags,
-        mem_usage       = mem_usage,
-        mip_levels      = use_mipmap ? u32(math.floor(math.log2(f32(math.max(extent.width, extent.height))))) + 1 : 1,
+        mip_levels      = use_mipmaps ? u32(math.floor(math.log2(f32(math.max(extent.width, extent.height))))) + 1 : 1,
     }
 
     image_info := vk.ImageCreateInfo{
@@ -52,13 +60,13 @@ image_create_private :: proc(renderer: ^Renderer, extent: vk.Extent3D, format: v
         mipLevels   = new_image.mip_levels,
         arrayLayers = 1,
         samples     = { ._1 },
-        tiling      = tiling,
+        tiling      = .OPTIMAL,
         usage       = usage,
     }
 
-    alloc_info := vma.AllocationCreateInfo{
-        usage = mem_usage,
-        flags = mem_flags
+    alloc_info := vma.AllocationCreateInfo{ usage = .AUTO_PREFER_DEVICE }
+    if (usage & { .COLOR_ATTACHMENT, .DEPTH_STENCIL_ATTACHMENT }) != {} {
+        alloc_info.flags += { .DEDICATED_MEMORY } // render targets get their own allocation
     }
 
     if vma.CreateImage(renderer.allocator, &image_info, &alloc_info, &new_image.handle, &new_image.allocation, nil) != .SUCCESS {
@@ -90,31 +98,20 @@ image_create_private :: proc(renderer: ^Renderer, extent: vk.Extent3D, format: v
     return new_image
 }
 
-// Creates a device-only image
-image_create_device :: proc(renderer: ^Renderer, extent: vk.Extent3D, format: vk.Format, usage: vk.ImageUsageFlags,
-    mem_flags: vma.AllocationCreateFlags = {}) -> Image {
-
-    return image_create_private(renderer, extent, format, usage, .OPTIMAL, .AUTO_PREFER_DEVICE, mem_flags, false)
-}
-
-// Creates an image that will be host-accessible
-image_create_host :: proc(renderer: ^Renderer, extent: vk.Extent3D, format: vk.Format, usage: vk.ImageUsageFlags,
-    mem_flags: vma.AllocationCreateFlags = { .HOST_ACCESS_RANDOM }) -> Image {
-
-    return image_create_private(renderer, extent, format, usage, .LINEAR, .AUTO_PREFER_HOST, mem_flags, false)
-}
-
 // Creates a device-only image that will be used for texture purposes
 texture_create :: proc(renderer: ^Renderer, extent: vk.Extent3D, sampler: vk.Sampler, format: vk.Format, usage: vk.ImageUsageFlags, use_mipmaps: bool = false) -> Texture {
-    new_texture: Texture
-    new_texture.image = image_create_private(renderer, extent, format, usage, .OPTIMAL, .AUTO_PREFER_DEVICE, {}, use_mipmaps)
-    new_texture.sampler = sampler
-    return new_texture
+    return Texture{
+        image   = image_create(renderer, extent, format, usage, use_mipmaps),
+        sampler = sampler,
+    }
 }
 
 texture_create_from_data :: proc(renderer: ^Renderer, data: rawptr, extent: vk.Extent3D, sampler: vk.Sampler, format: vk.Format, usage: vk.ImageUsageFlags, use_mipmaps: bool = false) -> Texture {
+    // TODO: generate mips. image_write_data only fills mip 0 for now
+    assert(!use_mipmaps, "texture_create_from_data does not generate mipmaps yet")
+
     new_texture := texture_create(renderer, extent, sampler, format, usage + { .TRANSFER_DST }, use_mipmaps)
-    image_copy_data_to_image_now(renderer, &new_texture.image, data, 4) // bytes per pixel; the proc multiplies by the extent
+    image_write_data(renderer, &new_texture.image, data)
     return new_texture
 }
 
@@ -125,8 +122,7 @@ texture_destroy :: proc(renderer: ^Renderer, texture: ^Texture) {
 image_recreate :: proc(renderer: ^Renderer, image: ^Image, extent: vk.Extent3D) {
     use_mipmaps: bool = image.mip_levels > 1
     image_destroy(renderer, image)
-    image^ = image_create_private(renderer, extent, image.format, image.usage_flags, image.tiling, image.mem_usage, image.mem_flags, use_mipmaps)
-    image.layout = .UNDEFINED
+    image^ = image_create(renderer, extent, image.format, image.usage_flags, use_mipmaps)
 }
 
 image_destroy :: proc(renderer: ^Renderer, image: ^Image) {
@@ -237,12 +233,13 @@ image_copy_subimage :: proc(cmd: vk.CommandBuffer, src: Image, src_extent: vk.Ex
     vk.CmdBlitImage2(cmd, &blit_info)
 }
 
+// Upload pixel data from mip 0 of the image to a buffer
 image_copy_to_buffer_now :: proc(renderer: ^Renderer, image: ^Image, buffer: ^Buffer) {
 
-    CommandCtx :: struct{ image: ^Image, capture_buffer: ^Buffer, }
+    CommandCtx :: struct{ image: ^Image, buffer: ^Buffer, }
     copy_command_ctx := CommandCtx{
-        image = image,
-        capture_buffer = buffer,
+        image  = image,
+        buffer = buffer,
     }
 
     immediate_command_submit(renderer, &copy_command_ctx, proc(cmd: vk.CommandBuffer, user_data: rawptr) {
@@ -255,20 +252,24 @@ image_copy_to_buffer_now :: proc(renderer: ^Renderer, image: ^Image, buffer: ^Bu
             imageSubresource = {
                 aspectMask      = ctx.image.aspect_flags,
                 mipLevel        = 0,
+                layerCount      = 1,
             },
         }
 
-        vk.CmdCopyImageToBuffer(cmd, ctx.image.handle, ctx.image.layout, ctx.capture_buffer.handle, 1, &copy_info)
+        vk.CmdCopyImageToBuffer(cmd, ctx.image.handle, ctx.image.layout, ctx.buffer.handle, 1, &copy_info)
         image_transition(cmd, ctx.image, before_layout)
     })
 }
 
-image_copy_data_to_image_now :: proc(renderer: ^Renderer, image: ^Image, data: rawptr, pixel_bytes: u64) {
-    data_size: u64 = u64(image.extent.width) * u64(image.extent.height) * u64(image.extent.depth) * pixel_bytes
+// Upload pixel data into mip 0 of the image via a staging buffer
+// WARNING: Don't use this in the render loop, the immediate submit will slow things down.
+//          Do it manually if you must copy device memory while recording a command buffer
+image_write_data :: proc(renderer: ^Renderer, image: ^Image, data: rawptr) {
+    data_size := image_get_size(image^)
 
-    upload_buffer := buffer_create(renderer, data_size, 1, { .TRANSFER_SRC }, .CPU_TO_GPU)
+    upload_buffer := buffer_create(renderer, data_size, 1, { .TRANSFER_SRC }, .CPU_WRITE)
     defer buffer_destroy(renderer, &upload_buffer)
-    buffer_write_data(renderer, &upload_buffer, data)
+    buffer_write_data(renderer, &upload_buffer, data, data_size)
 
     CommandCtx :: struct{ image: ^Image, upload_buffer: Buffer, }
     copy_command_ctx := CommandCtx{
@@ -294,8 +295,34 @@ image_copy_data_to_image_now :: proc(renderer: ^Renderer, image: ^Image, data: r
     })
 }
 
-image_get_size :: proc(image_extent: vk.Extent3D, n_channels: int = 4) -> u64 { // rgba -> 4 channels by default
-    return u64(image_extent.height) * u64(image_extent.width) * u64(image_extent.depth) * u64(n_channels)
+// Size in bytes of mip 0 of the image when tightly packed in a buffer
+image_get_size :: proc(image: Image) -> u64 {
+    format_texel_bytes :: proc(format: vk.Format) -> u64 {
+        #partial switch format {
+        case .R8_UNORM, .R8_SNORM, .R8_UINT, .R8_SINT, .R8_SRGB, .S8_UINT:
+            return 1
+        case .R8G8_UNORM, .R8G8_SNORM, .R8G8_UINT, .R8G8_SINT, .R8G8_SRGB,
+            .R16_UNORM, .R16_SNORM, .R16_UINT, .R16_SINT, .R16_SFLOAT, .D16_UNORM:
+            return 2
+        case .R8G8B8A8_UNORM, .R8G8B8A8_SNORM, .R8G8B8A8_UINT, .R8G8B8A8_SINT, .R8G8B8A8_SRGB,
+            .B8G8R8A8_UNORM, .B8G8R8A8_SNORM, .B8G8R8A8_UINT, .B8G8R8A8_SINT, .B8G8R8A8_SRGB,
+            .A2B10G10R10_UNORM_PACK32, .A2R10G10B10_UNORM_PACK32, .B10G11R11_UFLOAT_PACK32,
+            .R16G16_UNORM, .R16G16_SFLOAT, .R32_UINT, .R32_SINT, .R32_SFLOAT,
+            .D32_SFLOAT, .X8_D24_UNORM_PACK32:
+            return 4
+        case .R16G16B16A16_UNORM, .R16G16B16A16_SNORM, .R16G16B16A16_UINT, .R16G16B16A16_SINT, .R16G16B16A16_SFLOAT,
+            .R32G32_UINT, .R32G32_SINT, .R32G32_SFLOAT:
+            return 8
+        case .R32G32B32_UINT, .R32G32B32_SINT, .R32G32B32_SFLOAT:
+            return 12
+        case .R32G32B32A32_UINT, .R32G32B32A32_SINT, .R32G32B32A32_SFLOAT:
+            return 16
+        case:
+            log.panicf("format_texel_bytes: unsupported format %v", format)
+        }
+    }
+
+    return u64(image.extent.width) * u64(image.extent.height) * u64(image.extent.depth) * format_texel_bytes(image.format)
 }
 
 @(private)

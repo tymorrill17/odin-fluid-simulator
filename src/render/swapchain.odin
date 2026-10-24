@@ -100,6 +100,7 @@ swapchain_create :: proc(renderer: ^Renderer, old_swapchain: vk.SwapchainKHR = 0
             break
         }
     }
+    // TODO: Selection in order of preference
     for mode in present_modes {
         if mode == vk.PresentModeKHR.MAILBOX {
             present_mode = mode

@@ -142,7 +142,7 @@ main :: proc() {
     defer render.renderer_shutdown(&r)
 
     // Create an instance of the global uniform buffer for each frame in flight
-    global_scene_buffer := render.buffer_create(&r, size_of(render.SceneData), u64(r.frames_in_flight), { .UNIFORM_BUFFER }, .CPU_TO_GPU)
+    global_scene_buffer := render.buffer_create(&r, size_of(render.SceneData), u64(r.frames_in_flight), { .UNIFORM_BUFFER }, .CPU_WRITE)
     defer render.buffer_destroy(&r, &global_scene_buffer)
     global_scene_data := render.SceneData{
         viewproj = (1), // initialize to identity matrix

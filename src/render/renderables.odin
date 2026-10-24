@@ -112,7 +112,7 @@ material_metallic_roughness_create :: proc(renderer: ^Renderer, color_texture: T
 
     material.constants.color_factors = { 1, 1, 1, 1 }
     material.constants.metal_rough_factors = { 1, 0.5, 0, 0 }
-    material.resources.constants_buffer = buffer_create(renderer, size_of(material.constants), 1, { .UNIFORM_BUFFER }, .AUTO_PREFER_DEVICE)
+    material.resources.constants_buffer = buffer_create(renderer, size_of(material.constants), 1, { .UNIFORM_BUFFER }, .GPU_ONLY_ACCESS)
     buffer_write_data(renderer, &material.resources.constants_buffer, &material.constants, size_of(material.constants))
 
     descriptor_layout_builder_add_binding(&renderer.descriptor_layout_builder, 0, .UNIFORM_BUFFER, 1, { .VERTEX, .FRAGMENT })
@@ -145,15 +145,15 @@ mesh_upload_to_GPU :: proc(renderer: ^Renderer, vertices: []MeshVertex, indices:
     index_buffer_size := u64(len(indices) * size_of(u32))
 
     mesh: MeshBuffers
-    mesh.vertex_buffer = buffer_create(renderer, vertex_buffer_size, 1, { .VERTEX_BUFFER, .TRANSFER_DST, .SHADER_DEVICE_ADDRESS }, .GPU_ONLY)
+    mesh.vertex_buffer = buffer_create(renderer, vertex_buffer_size, 1, { .VERTEX_BUFFER, .TRANSFER_DST, .SHADER_DEVICE_ADDRESS }, .GPU_ONLY_ACCESS)
     addr_info := vk.BufferDeviceAddressInfo{
         sType = vk.StructureType.BUFFER_DEVICE_ADDRESS_INFO,
         buffer = mesh.vertex_buffer.handle
     }
     mesh.vertex_buffer_addr = vk.GetBufferDeviceAddress(renderer.logical_device, &addr_info)
-    mesh.index_buffer = buffer_create(renderer, index_buffer_size, 1, { .INDEX_BUFFER, .TRANSFER_DST }, .GPU_ONLY)
+    mesh.index_buffer = buffer_create(renderer, index_buffer_size, 1, { .INDEX_BUFFER, .TRANSFER_DST }, .GPU_ONLY_ACCESS)
 
-    staging_buffer := buffer_create(renderer, vertex_buffer_size + index_buffer_size, 1, { .TRANSFER_SRC }, .CPU_ONLY)
+    staging_buffer := buffer_create(renderer, vertex_buffer_size + index_buffer_size, 1, { .TRANSFER_SRC }, .CPU_WRITE)
     defer buffer_destroy(renderer, &staging_buffer)
     buffer_write_data(renderer, &staging_buffer, raw_data(vertices), vertex_buffer_size)
     buffer_write_data(renderer, &staging_buffer, raw_data(indices), index_buffer_size, vertex_buffer_size)

@@ -23,6 +23,7 @@ VulkanLibrary :: struct {
 glob_ctx: runtime.Context
 glob_vk_lib: VulkanLibrary
 
+// TODO: Enable features in a more sensical and error-handling way
 device_features: vk.PhysicalDeviceFeatures
 device_features_11 := vk.PhysicalDeviceVulkan11Features{ sType = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
     shaderDrawParameters = true,
@@ -181,10 +182,10 @@ renderer_initialize :: proc(renderer: ^Renderer, renderer_cfg: RendererConfig) {
         height = min(u32(renderer.window.max_framebuffer_size.y), max_dim),
         depth  = 1,
     }
-    renderer.draw_image = image_create_device(renderer, max_draw_extent, renderer.swapchain.image_format,
+    renderer.draw_image = image_create(renderer, max_draw_extent, renderer.swapchain.image_format,
         { .TRANSFER_SRC, .TRANSFER_DST, .COLOR_ATTACHMENT, .STORAGE })
         // { .TRANSFER_SRC, .TRANSFER_DST, .COLOR_ATTACHMENT })
-    renderer.depth_image = image_create_device(renderer, max_draw_extent, .D32_SFLOAT, { .DEPTH_STENCIL_ATTACHMENT })
+    renderer.depth_image = image_create(renderer, max_draw_extent, .D32_SFLOAT, { .DEPTH_STENCIL_ATTACHMENT })
     renderer.draw_extent = vk.Extent3D{
         width  = math.min(renderer.draw_image.extent.width, renderer.swapchain.extent.width),
         height = math.min(renderer.draw_image.extent.height, renderer.swapchain.extent.height),

@@ -15,11 +15,35 @@ Buffer :: struct {
     instance_count: u64, // How many instances
     alignment:      u64, // device-specific data alignment
 
-    properties:     vk.MemoryPropertyFlags
+    mem_properties: vk.MemoryPropertyFlags,
+    access:         BufferAccess,
+}
+
+BufferAccess :: enum {
+    GPU_ONLY_ACCESS,    // Device-local
+    CPU_WRITE,          // CPU writes sequentially. use for per-frame UBOs/SSBOs, etc
+    CPU_READ,
+    CPU_WRITE_IF_FAST,  // Device-local preferred, host-visible if device allows
+}
+
+@(private="file")
+buffer_access_to_vma_flags :: proc(access: BufferAccess) -> (vma.MemoryUsage, vma.AllocationCreateFlags) {
+    switch access {
+    case .GPU_ONLY_ACCESS:
+        return .AUTO_PREFER_DEVICE, {}
+    case .CPU_WRITE:
+        return .AUTO, { .HOST_ACCESS_SEQUENTIAL_WRITE, .MAPPED }
+    case .CPU_READ:
+        return .AUTO, { .HOST_ACCESS_RANDOM, .MAPPED }
+    case .CPU_WRITE_IF_FAST:
+        return .AUTO, { .HOST_ACCESS_SEQUENTIAL_WRITE, .HOST_ACCESS_ALLOW_TRANSFER_INSTEAD, .MAPPED }
+    case:
+        log.panic("Unknown access flag!")
+    }
 }
 
 buffer_create :: proc(renderer: ^Renderer, instance_bytes: u64, instance_count: u64,
-    usage: vk.BufferUsageFlags, memory_usage: vma.MemoryUsage) -> Buffer {
+    usage: vk.BufferUsageFlags, access_flag: BufferAccess) -> Buffer {
 
     find_alignment :: proc(instance_bytes: u64, min_offset_alignment: u64) -> u64 {
         if min_offset_alignment > 0 {
@@ -54,10 +78,10 @@ buffer_create :: proc(renderer: ^Renderer, instance_bytes: u64, instance_count: 
         size    = vk.DeviceSize(new_buffer.total_bytes),
         usage   = usage
     }
-
+    mem_usage, mem_flags := buffer_access_to_vma_flags(access_flag)
     alloc_info := vma.AllocationCreateInfo{
-        flags = { .MAPPED },
-        usage = memory_usage,
+        flags = mem_flags,
+        usage = mem_usage,
     }
 
     alloc_result: vma.AllocationInfo
@@ -65,8 +89,8 @@ buffer_create :: proc(renderer: ^Renderer, instance_bytes: u64, instance_count: 
         log.panic("Failed to create buffer!")
     }
     new_buffer.data_ptr = alloc_result.pMappedData // This is nil if the buffer is device-only
-    vma.GetAllocationMemoryProperties(renderer.allocator, new_buffer.allocation, &new_buffer.properties)
-    // log.debug("memory_usage: ", memory_usage, ", properties: ", new_buffer.properties)
+    new_buffer.access = access_flag
+    vma.GetAllocationMemoryProperties(renderer.allocator, new_buffer.allocation, &new_buffer.mem_properties)
 
     return new_buffer
 }
@@ -75,25 +99,41 @@ buffer_destroy :: proc(renderer: ^Renderer, buffer: ^Buffer) {
     vma.DestroyBuffer(renderer.allocator, buffer.handle, buffer.allocation)
 }
 
-buffer_map :: proc(renderer: ^Renderer, buffer: ^Buffer) {
-    if vma.MapMemory(renderer.allocator, buffer.allocation, &buffer.data_ptr) != .SUCCESS {
-        log.panic("Failed to map memory to buffer!")
-    }
-}
-
-buffer_unmap :: proc(renderer: ^Renderer, buffer: ^Buffer) {
-    vma.UnmapMemory(renderer.allocator, buffer.allocation)
-}
-
+// Copy data into buffer memory, wherever it may be
+// WARNING: If your buffer is device-only, don't use this in the render loop. The immediate submit will slow things down.
+//          Do it manually if you must copy device memory while recording a command buffer
 buffer_write_data :: proc(renderer: ^Renderer, buffer: ^Buffer,
-    data: rawptr, size: u64 = vk.WHOLE_SIZE, offset: u64 = 0) {
+    data: rawptr, size: u64, offset: u64 = 0) {
 
-    if size == vk.WHOLE_SIZE {
-        mem.copy_non_overlapping(buffer.data_ptr, data, int(buffer.total_bytes))
-    } else {
-        offset_data := ([^]u8)(buffer.data_ptr)
-        mem.copy_non_overlapping(&offset_data[offset], data, int(size))
+    assert(offset + size <= buffer.total_bytes) // Make sure we aren't overflowing
+
+    // If he buffer is mapped, we have host-visible data. Copy it directly
+    if buffer.data_ptr != nil {
+        mem.copy_non_overlapping(rawptr(uintptr(buffer.data_ptr) + uintptr(offset)), data, int(size))
+
+        // If memory is not host-coherent, we need to flush what we uploaded from the CPU
+        if .HOST_COHERENT not_in buffer.mem_properties {
+            vma.FlushAllocation(renderer.allocator, buffer.allocation, vk.DeviceSize(offset), vk.DeviceSize(size))
+        }
+        return
     }
+
+    // Otherwise, we need a staging buffer
+    staging_buffer := buffer_create(renderer, size, 1, { .TRANSFER_SRC }, .CPU_WRITE)
+    defer buffer_destroy(renderer, &staging_buffer)
+    buffer_write_data(renderer, &staging_buffer, data, size)
+
+    CopyCtx :: struct { src, dst: vk.Buffer, region: vk.BufferCopy }
+    ctx := CopyCtx{
+        src    = staging_buffer.handle,
+        dst    = buffer.handle,
+        region = { srcOffset = 0, dstOffset = vk.DeviceSize(offset), size = vk.DeviceSize(size) },
+    }
+
+    immediate_command_submit(renderer, &ctx, proc(cmd: vk.CommandBuffer, user_data: rawptr) {
+        ctx := (^CopyCtx)(user_data)
+        vk.CmdCopyBuffer(cmd, ctx.src, ctx.dst, 1, &ctx.region)
+    })
 }
 
 buffer_write_data_at_index :: proc(renderer: ^Renderer, buffer: ^Buffer,
