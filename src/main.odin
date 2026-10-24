@@ -259,7 +259,7 @@ main :: proc() {
 
     render.descriptor_layout_builder_add_binding(&r.descriptor_layout_builder, 0, .COMBINED_IMAGE_SAMPLER, 1, { .FRAGMENT })
     texture_descriptor_layout := render.descriptor_layout_builder_build(&r.descriptor_layout_builder, &r)
-    texture_descriptor := render.descriptor_set_create(&r, { texture_descriptor_layout })
+    texture_descriptor := render.descriptor_set_create(&r, texture_descriptor_layout)
     render.descriptor_writer_add_textures(&r.descriptor_writer, &texture_descriptor, 0, { error_texture }, .COMBINED_IMAGE_SAMPLER)
     render.descriptor_writer_update_sets(&r.descriptor_writer, &r)
 

@@ -110,17 +110,16 @@ material_metallic_roughness_create :: proc(renderer: ^Renderer, color_texture: T
     material.resources.color_texture = color_texture
     material.resources.metal_rough_texture = metal_rough_texture
 
-    material.resources.constants_buffer = buffer_create(renderer, size_of(material.constants), 1, { .UNIFORM_BUFFER }, .AUTO_PREFER_DEVICE)
     material.constants.color_factors = { 1, 1, 1, 1 }
     material.constants.metal_rough_factors = { 1, 0.5, 0, 0 }
-
+    material.resources.constants_buffer = buffer_create(renderer, size_of(material.constants), 1, { .UNIFORM_BUFFER }, .AUTO_PREFER_DEVICE)
     buffer_write_data(renderer, &material.resources.constants_buffer, &material.constants, size_of(material.constants))
 
     descriptor_layout_builder_add_binding(&renderer.descriptor_layout_builder, 0, .UNIFORM_BUFFER, 1, { .VERTEX, .FRAGMENT })
     descriptor_layout_builder_add_binding(&renderer.descriptor_layout_builder, 1, .COMBINED_IMAGE_SAMPLER, 1, { .VERTEX, .FRAGMENT })
     descriptor_layout_builder_add_binding(&renderer.descriptor_layout_builder, 2, .COMBINED_IMAGE_SAMPLER, 1, { .VERTEX, .FRAGMENT })
     material.set_layout = descriptor_layout_builder_build(&renderer.descriptor_layout_builder, renderer)
-    material.set = descriptor_set_create(renderer, { material.set_layout })
+    material.set = descriptor_set_create(renderer, material.set_layout)
 
     descriptor_writer_add_buffers(&renderer.descriptor_writer, &material.set, 0,
         { material.resources.constants_buffer }, .UNIFORM_BUFFER)

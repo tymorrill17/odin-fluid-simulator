@@ -162,7 +162,7 @@ descriptor_allocator_expand_open_pools :: proc(renderer: ^Renderer, set_count: u
     append(&renderer.descriptor_allocator.open_pools, pool)
 }
 
-descriptor_set_create :: proc(renderer: ^Renderer, layouts: []vk.DescriptorSetLayout) -> DescriptorSet {
+descriptor_set_create :: proc(renderer: ^Renderer, layout: vk.DescriptorSetLayout) -> DescriptorSet {
     get_open_pool :: proc(renderer: ^Renderer) -> vk.DescriptorPool {
         if len(renderer.descriptor_allocator.open_pools) == 0 { // There are no open pools, need to make one
             descriptor_allocator_expand_open_pools(renderer, renderer.descriptor_allocator.sets_per_pool, renderer.descriptor_allocator.pool_size_ratios[:])
@@ -174,12 +174,13 @@ descriptor_set_create :: proc(renderer: ^Renderer, layouts: []vk.DescriptorSetLa
         return renderer.descriptor_allocator.open_pools[len(renderer.descriptor_allocator.open_pools) - 1]
     }
 
+    layout := layout
     pool_to_use := get_open_pool(renderer)
     alloc_info := vk.DescriptorSetAllocateInfo{
         sType               = vk.StructureType.DESCRIPTOR_SET_ALLOCATE_INFO,
         descriptorPool      = pool_to_use,
-        descriptorSetCount  = u32(len(layouts)),
-        pSetLayouts         = raw_data(layouts),
+        descriptorSetCount  = 1,
+        pSetLayouts         = &layout,
     }
 
     new_set: DescriptorSet

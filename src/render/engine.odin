@@ -221,7 +221,7 @@ renderer_initialize :: proc(renderer: ^Renderer, renderer_cfg: RendererConfig) {
     // Build the descriptor layout for the global scene descriptors (like camera data, etc)
     descriptor_layout_builder_add_binding(&renderer.descriptor_layout_builder, 0, .UNIFORM_BUFFER_DYNAMIC, 1, { .VERTEX, .FRAGMENT, .COMPUTE })
     renderer.scene_descriptor_layout = descriptor_layout_builder_build(&renderer.descriptor_layout_builder, renderer)
-    renderer.scene_descriptor = descriptor_set_create(renderer, { renderer.scene_descriptor_layout })
+    renderer.scene_descriptor = descriptor_set_create(renderer, renderer.scene_descriptor_layout)
 
     renderer.renderables             = make([dynamic]RenderObject)
     renderer.compute_passes          = make([dynamic]ComputePass)
