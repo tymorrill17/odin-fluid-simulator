@@ -65,7 +65,6 @@ particle_system_create :: proc(renderer: ^Renderer, max_particles: u32, origin: 
             buffer = system.particle_buffers[i].handle,
         }
         system.particle_buffer_addrs[i] = vk.GetBufferDeviceAddress(renderer.logical_device, &addr_info)
-        buffer_map(renderer, &system.particle_buffers[i])
     }
     system.current_particle_buffer_addr = system.particle_buffer_addrs[renderer.frame_index]
 

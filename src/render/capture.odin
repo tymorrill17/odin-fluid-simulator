@@ -80,9 +80,7 @@ capture_screenshot :: proc(renderer: ^Renderer) {
     complete_filepath, _ := filepath.join({CAPTURE_DIR, filename}, context.temp_allocator)
     complete_filepath_c  := strings.clone_to_cstring(complete_filepath, context.temp_allocator)
 
-    buffer_map(renderer, capture_buffer)
     stbi.write_png(complete_filepath_c, i32(capture_extent.width), i32(capture_extent.height), NUM_CHANNELS, capture_buffer.data_ptr, 0)
-    buffer_unmap(renderer, capture_buffer)
     log.infof("Saved screenshot: %s", filename)
     renderer.recorder.screenshot_requested = false
 
@@ -248,8 +246,6 @@ capture_send_recorded_image :: proc(renderer: ^Renderer) {
     capture_buffer := &renderer.recorder.capture_buffers[renderer.frame_index]
     capture_extent: vk.Extent3D = renderer.draw_image.extent
 
-    buffer_map(renderer, capture_buffer)
-
     total_bytes := int(image_get_size(capture_extent))
     image_data_ptr := mem.slice_ptr((^u8)(capture_buffer.data_ptr), total_bytes)
 
@@ -264,5 +260,4 @@ capture_send_recorded_image :: proc(renderer: ^Renderer) {
         }
         written += bytes_written
     }
-    buffer_unmap(renderer, capture_buffer)
 }

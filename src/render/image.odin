@@ -9,6 +9,7 @@ Image :: struct {
     handle:         vk.Image,
     view:           vk.ImageView,
     allocation:     vma.Allocation, // if nil, then the image has or needs no allocation
+    mem_properties: vk.MemoryPropertyFlags,
 
     layout:         vk.ImageLayout,
     extent:         vk.Extent3D,
@@ -84,24 +85,29 @@ image_create_private :: proc(renderer: ^Renderer, extent: vk.Extent3D, format: v
     if vk.CreateImageView(renderer.logical_device, &image_view_info, nil, &new_image.view) != .SUCCESS {
         log.panic("Failed to create image view!")
     }
+    vma.GetAllocationMemoryProperties(renderer.allocator, new_image.allocation, &new_image.mem_properties)
 
     return new_image
 }
 
 // Creates a device-only image
-image_create_device :: proc(renderer: ^Renderer, extent: vk.Extent3D, format: vk.Format, usage: vk.ImageUsageFlags) -> Image {
-    return image_create_private(renderer, extent, format, usage, .OPTIMAL, .AUTO_PREFER_DEVICE, {}, false)
+image_create_device :: proc(renderer: ^Renderer, extent: vk.Extent3D, format: vk.Format, usage: vk.ImageUsageFlags,
+    mem_flags: vma.AllocationCreateFlags = {}) -> Image {
+
+    return image_create_private(renderer, extent, format, usage, .OPTIMAL, .AUTO_PREFER_DEVICE, mem_flags, false)
 }
 
 // Creates an image that will be host-accessible
-image_create_host :: proc(renderer: ^Renderer, extent: vk.Extent3D, format: vk.Format, usage: vk.ImageUsageFlags) -> Image {
-    return image_create_private(renderer, extent, format, usage, .LINEAR, .AUTO_PREFER_HOST, { .HOST_ACCESS_RANDOM }, false)
+image_create_host :: proc(renderer: ^Renderer, extent: vk.Extent3D, format: vk.Format, usage: vk.ImageUsageFlags,
+    mem_flags: vma.AllocationCreateFlags = { .HOST_ACCESS_RANDOM }) -> Image {
+
+    return image_create_private(renderer, extent, format, usage, .LINEAR, .AUTO_PREFER_HOST, mem_flags, false)
 }
 
 // Creates a device-only image that will be used for texture purposes
 texture_create :: proc(renderer: ^Renderer, extent: vk.Extent3D, sampler: vk.Sampler, format: vk.Format, usage: vk.ImageUsageFlags, use_mipmaps: bool = false) -> Texture {
     new_texture: Texture
-    new_texture.image = image_create_private(renderer, extent, format, usage, .OPTIMAL, .AUTO, {}, use_mipmaps)
+    new_texture.image = image_create_private(renderer, extent, format, usage, .OPTIMAL, .AUTO_PREFER_DEVICE, {}, use_mipmaps)
     new_texture.sampler = sampler
     return new_texture
 }
@@ -262,9 +268,7 @@ image_copy_data_to_image_now :: proc(renderer: ^Renderer, image: ^Image, data: r
 
     upload_buffer := buffer_create(renderer, data_size, 1, { .TRANSFER_SRC }, .CPU_TO_GPU)
     defer buffer_destroy(renderer, &upload_buffer)
-    buffer_map(renderer, &upload_buffer)
     buffer_write_data(renderer, &upload_buffer, data)
-    buffer_unmap(renderer, &upload_buffer)
 
     CommandCtx :: struct{ image: ^Image, upload_buffer: Buffer, }
     copy_command_ctx := CommandCtx{

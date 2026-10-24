@@ -14,6 +14,8 @@ Buffer :: struct {
     instance_bytes: u64, // How many bytes one instance uses
     instance_count: u64, // How many instances
     alignment:      u64, // device-specific data alignment
+
+    properties:     vk.MemoryPropertyFlags
 }
 
 buffer_create :: proc(renderer: ^Renderer, instance_bytes: u64, instance_count: u64,
@@ -58,9 +60,13 @@ buffer_create :: proc(renderer: ^Renderer, instance_bytes: u64, instance_count: 
         usage = memory_usage,
     }
 
-    if vma.CreateBuffer(renderer.allocator, &buffer_info, &alloc_info, &new_buffer.handle, &new_buffer.allocation, nil) != .SUCCESS {
+    alloc_result: vma.AllocationInfo
+    if vma.CreateBuffer(renderer.allocator, &buffer_info, &alloc_info, &new_buffer.handle, &new_buffer.allocation, &alloc_result) != .SUCCESS {
         log.panic("Failed to create buffer!")
     }
+    new_buffer.data_ptr = alloc_result.pMappedData // This is nil if the buffer is device-only
+    vma.GetAllocationMemoryProperties(renderer.allocator, new_buffer.allocation, &new_buffer.properties)
+    // log.debug("memory_usage: ", memory_usage, ", properties: ", new_buffer.properties)
 
     return new_buffer
 }

@@ -155,7 +155,6 @@ mesh_upload_to_GPU :: proc(renderer: ^Renderer, vertices: []MeshVertex, indices:
 
     staging_buffer := buffer_create(renderer, vertex_buffer_size + index_buffer_size, 1, { .TRANSFER_SRC }, .CPU_ONLY)
     defer buffer_destroy(renderer, &staging_buffer)
-    buffer_map(renderer, &staging_buffer)
     buffer_write_data(renderer, &staging_buffer, raw_data(vertices), vertex_buffer_size)
     buffer_write_data(renderer, &staging_buffer, raw_data(indices), index_buffer_size, vertex_buffer_size)
 
