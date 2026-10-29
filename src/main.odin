@@ -5,6 +5,7 @@ import vk "vendor:vulkan"
 import "render"
 import "core:log"
 import "core:math"
+import "core:math/linalg"
 import "core:path/filepath"
 import "core:time"
 
@@ -60,37 +61,6 @@ requested_device_extensions : []cstring : {
     "VK_KHR_swapchain", // Necessary extension to use swapchains
     "VK_GOOGLE_user_type",
     "VK_KHR_present_mode_fifo_latest_ready",
-}
-
-get_test_gltf_material :: proc(renderer: ^render.Renderer, descriptor_layout: vk.DescriptorSetLayout, descriptor: ^render.DescriptorSet) -> render.MaterialInstance {
-    pipeline_cfg := render.pipeline_cfg_create()
-    defer render.pipeline_cfg_destroy(&pipeline_cfg)
-
-    shader := render.shader_module_create_from_file(renderer, "basic.slang.spv")
-    defer render.shader_module_destroy(renderer, shader)
-
-    render.pipeline_cfg_add_shader(&pipeline_cfg, shader, { .VERTEX }, "basic_vertex")
-    render.pipeline_cfg_add_shader(&pipeline_cfg, shader, { .FRAGMENT }, "basic_frag")
-    render.pipeline_cfg_set_input_topology(&pipeline_cfg, .TRIANGLE_LIST)
-    render.pipeline_cfg_set_polygon_mode(&pipeline_cfg, .FILL)
-    render.pipeline_cfg_set_cull_mode(&pipeline_cfg, {}, .CLOCKWISE)
-    render.pipeline_cfg_set_multisampling(&pipeline_cfg, { ._1 })
-    render.pipeline_cfg_set_blending(&pipeline_cfg, .NONE)
-    render.pipeline_cfg_set_color_attachment_format(&pipeline_cfg, renderer.draw_image.format)
-    render.pipeline_cfg_set_depth_attachment_format(&pipeline_cfg, renderer.depth_image.format)
-    render.pipeline_cfg_set_depth_test(&pipeline_cfg, .GREATER_OR_EQUAL)
-    render.pipeline_cfg_add_push_constant_range(&pipeline_cfg, { .VERTEX }, size_of(render.DrawPushConstants))
-    render.pipeline_cfg_add_descriptor(&pipeline_cfg, renderer.scene_descriptor_layout)
-
-    material: render.MaterialInstance
-    material.pass_type = .opaque
-
-    // Material descriptor set creation
-    render.pipeline_cfg_add_descriptor(&pipeline_cfg, descriptor_layout)
-    material.descriptor = descriptor
-
-    material.pipeline = render.pipeline_cfg_build_pipeline(&pipeline_cfg, renderer)
-    return material
 }
 
 get_sky_material :: proc(renderer: ^render.Renderer, descriptor_layout: vk.DescriptorSetLayout, descriptor_set: ^render.DescriptorSet) -> render.MaterialInstance {
@@ -276,8 +246,12 @@ main :: proc() {
         delete(monkey_mesh)
     }
 
-    monkey_material := get_test_gltf_material(&r, texture_descriptor_layout, &texture_descriptor)
-    defer render.pipeline_destroy(&r, &monkey_material.pipeline)
+    gltf := render.material_metallic_roughness_create(&r, error_texture, error_texture)
+    defer render.material_metallic_roughness_destroy(&gltf, &r)
+    monkey_material: render.MaterialInstance
+    monkey_material.pass_type = .opaque
+    monkey_material.pipeline = gltf.opaque_pipeline
+    monkey_material.descriptor = &gltf.set
     for mesh in monkey_mesh {
         for &surface in mesh.surfaces do surface.material = &monkey_material
     }
@@ -286,12 +260,32 @@ main :: proc() {
     monkey_scene_graph := render.scene_graph_create()
     monkey_node := render.MeshNode{
         mesh = monkey_mesh[0],
-        world_transform = 1,
+        world_transform = linalg.matrix4_translate_f32({ 0, 0, 3 }),
         local_transform = 1,
         get_render_object = render.mesh_asset_get_render_object,
     }
     monkey_scene_graph.root = (^render.SceneGraphNode)(&monkey_node)
     monkey_scene_graph.depth = 1
+
+    // TODO: change this later...
+    gltf_grey := render.material_metallic_roughness_create(&r, grey_texture, grey_texture)
+    defer render.material_metallic_roughness_destroy(&gltf_grey, &r)
+    floor_material: render.MaterialInstance
+    floor_material.pass_type = .opaque
+    floor_material.pipeline = gltf_grey.opaque_pipeline
+    floor_material.descriptor = &gltf_grey.set
+    floor_mesh := render.mesh_create_rectangle(&r, 10, 10)
+    defer render.mesh_destroy(&r, floor_mesh)
+    for &surface in floor_mesh.surfaces do surface.material = &floor_material
+    floor_scene_graph := render.scene_graph_create()
+    floor_node := render.MeshNode{
+        mesh = floor_mesh,
+        world_transform = linalg.matrix4_translate_f32({ 0, -2, 0 }) * linalg.matrix4_rotate_f32(-math.PI / 2, { 1, 0, 0 }),
+        local_transform = 1,
+        get_render_object = render.mesh_asset_get_render_object,
+    }
+    floor_scene_graph.root = (^render.SceneGraphNode)(&floor_node)
+    floor_scene_graph.depth = 1
 
     recording_timer := render.timer_create()
     for !render.window_should_close(&r) {
@@ -381,6 +375,12 @@ main :: proc() {
         global_scene_data.proj = render.projection_set_perspective(camera_config.fov, aspect_ratio, camera_config.near_plane, camera_config.far_plane)
         global_scene_data.view = render.view_set_direction(camera_controller.position, camera_controller.forward, render.g_world_up)
         global_scene_data.viewproj = global_scene_data.proj * global_scene_data.view
+
+        // default lighting parameters
+        global_scene_data.ambient_color = .1
+        global_scene_data.sunlight_color = 1
+        global_scene_data.sunlight_dir = { 0, 1, 0.5, 1 }
+
         render.buffer_write_data_at_index(&r, &global_scene_buffer, rawptr(&global_scene_data), r.frame_index) // Update at the right index for this frame
 
         // Update fluidsim particles.
@@ -389,6 +389,7 @@ main :: proc() {
         // Get the renderables
         render.scene_graph_get_render_objects(&fluidsim_particle_scene_graph, &r.renderables)
         render.scene_graph_get_render_objects(&monkey_scene_graph, &r.renderables)
+        render.scene_graph_get_render_objects(&floor_scene_graph, &r.renderables)
 
         render.draw(&r)
     }

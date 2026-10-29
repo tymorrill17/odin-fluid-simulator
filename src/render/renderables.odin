@@ -130,7 +130,7 @@ material_metallic_roughness_create :: proc(renderer: ^Renderer, color_texture: T
 
     material.constants.color_factors = { 1, 1, 1, 1 }
     material.constants.metal_rough_factors = { 1, 0.5, 0, 0 }
-    material.resources.constants_buffer = buffer_create(renderer, size_of(material.constants), 1, { .UNIFORM_BUFFER }, .GPU_ONLY_ACCESS)
+    material.resources.constants_buffer = buffer_create(renderer, size_of(material.constants), 1, { .UNIFORM_BUFFER, .TRANSFER_DST }, .GPU_ONLY_ACCESS)
     buffer_write_data(renderer, &material.resources.constants_buffer, &material.constants, size_of(material.constants))
 
     descriptor_layout_builder_add_binding(&renderer.descriptor_layout_builder, 0, .UNIFORM_BUFFER, 1, { .VERTEX, .FRAGMENT })
@@ -141,10 +141,10 @@ material_metallic_roughness_create :: proc(renderer: ^Renderer, color_texture: T
 
     descriptor_writer_add_buffers(&renderer.descriptor_writer, &material.set, 0,
         { material.resources.constants_buffer }, .UNIFORM_BUFFER)
-    descriptor_writer_add_images(&renderer.descriptor_writer, &material.set, 1,
-        { material.resources.color_texture.image }, .COMBINED_IMAGE_SAMPLER)
-    descriptor_writer_add_images(&renderer.descriptor_writer, &material.set, 2,
-        { material.resources.metal_rough_texture.image }, .COMBINED_IMAGE_SAMPLER)
+    descriptor_writer_add_textures(&renderer.descriptor_writer, &material.set, 1,
+        { material.resources.color_texture }, .COMBINED_IMAGE_SAMPLER)
+    descriptor_writer_add_textures(&renderer.descriptor_writer, &material.set, 2,
+        { material.resources.metal_rough_texture }, .COMBINED_IMAGE_SAMPLER)
     descriptor_writer_update_sets(&renderer.descriptor_writer, renderer)
 
     material_metallic_roughness_build_pipelines(renderer, &material)
