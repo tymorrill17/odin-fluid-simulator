@@ -8,17 +8,6 @@ import "core:math/linalg"
 
 ASSET_DIR :: #config(ASSET_DIR, ".")
 
-MaterialPass :: enum {
-    opaque,
-    transparent,
-}
-
-MaterialInstance :: struct {
-    pipeline:   Pipeline,
-    descriptor: ^DescriptorSet,
-    pass_type:  MaterialPass
-}
-
 RenderObject :: struct {
     index_count:            u32,
     first_index:            u32,
@@ -30,30 +19,16 @@ RenderObject :: struct {
     instance_count:         u32,               // How many instances are we rendering?
 }
 
-MeshBuffers :: struct {
-    vertex_buffer:      Buffer,
-    index_buffer:       Buffer,
-    vertex_buffer_addr: vk.DeviceAddress
+MaterialPass :: enum {
+    opaque,
+    transparent,
 }
 
-GeometricSurface :: struct {
-    start_index:    u32,
-    count:          u32,
+MaterialInstance :: struct {
+    pipeline:   Pipeline,
+    descriptor: ^DescriptorSet,
+    pass_type:  MaterialPass
 }
-
-MeshAsset :: struct {
-    name:           string,
-    surfaces:       []GeometricSurface,
-    mesh_buffers:   MeshBuffers,
-}
-
-MeshVertex :: struct {
-    position:   float3,
-    uv_x:       f32,
-    normal:     float3,
-    uv_y:       f32,
-    color:      float4,
-};
 
 MaterialMetallicRoughnessGLTF :: struct {
     opaque_pipeline:        Pipeline,
@@ -74,6 +49,49 @@ MaterialMetallicRoughnessGLTF :: struct {
     },
 }
 
+GeometricSurface :: struct {
+    start_index:    u32,
+    count:          u32,
+    material:       ^MaterialInstance
+}
+
+MeshBuffers :: struct {
+    vertex_buffer:      Buffer,
+    index_buffer:       Buffer,
+    vertex_buffer_addr: vk.DeviceAddress
+}
+
+MeshAsset :: struct {
+    name:           string,
+    surfaces:       []GeometricSurface,
+    mesh_buffers:   MeshBuffers,
+}
+
+MeshVertex :: struct {
+    position:   float3,
+    uv_x:       f32,
+    normal:     float3,
+    uv_y:       f32,
+    color:      float4,
+};
+
+SceneGraph :: struct {
+    root:  ^SceneGraphNode,
+    depth: int, // Depth of the graph (really a tree)
+}
+
+SceneGraphNode :: struct {
+    parent:            ^SceneGraphNode,
+    children:          []^SceneGraphNode,
+    local_transform:   float4x4,
+    world_transform:   float4x4,
+    get_render_object: proc(^SceneGraphNode, ^[dynamic]RenderObject, float4x4),
+}
+
+MeshNode :: struct {
+    using node: SceneGraphNode,
+    mesh:       ^MeshAsset,
+}
 
 material_metallic_roughness_create :: proc(renderer: ^Renderer, color_texture: Texture, metal_rough_texture: Texture) -> MaterialMetallicRoughnessGLTF {
 
@@ -134,8 +152,13 @@ material_metallic_roughness_create :: proc(renderer: ^Renderer, color_texture: T
     return material
 }
 
+// Textures are owned by the caller and the set layout is owned by the descriptor layout cache, so neither is destroyed here.
 material_metallic_roughness_destroy :: proc(material: ^MaterialMetallicRoughnessGLTF, renderer: ^Renderer) {
-
+    pipeline_destroy(renderer, &material.opaque_pipeline)
+    pipeline_destroy(renderer, &material.transparent_pipeline)
+    buffer_destroy(renderer, &material.resources.constants_buffer)
+    descriptor_set_destroy(&material.set)
+    material^ = {}
 }
 
 // Send vertex and index data to the GPU by creating buffers and writing to them. Returns the created buffers.
@@ -341,18 +364,51 @@ mesh_load_gltf :: proc(renderer: ^Renderer, filename: string) -> []^MeshAsset {
 }
 
 // Converts MeshAsset to a RenderObject
-// TODO: This just has a single material being passed to it now. This should change. Why not put it in the GeometricSurface?
-mesh_get_render_objects_single_instance :: proc(mesh: ^MeshAsset, out: ^[dynamic]RenderObject, material: ^MaterialInstance, position: float3) {
+mesh_asset_get_render_object :: proc(node: ^SceneGraphNode, render_object_list: ^[dynamic]RenderObject, transform: float4x4) {
+    node := (^MeshNode)(node)
+    mesh := node.mesh
     for surface in mesh.surfaces {
-        append(out, RenderObject{
+        append(render_object_list, RenderObject{
             index_count = surface.count,
             first_index = surface.start_index,
             index_buffer = mesh.mesh_buffers.index_buffer.handle,
-            material = material,
-            transform = linalg.matrix4_translate_f32(position),
+            material = surface.material,
+            transform = transform,
             vertex_buffer_addr = mesh.mesh_buffers.vertex_buffer_addr,
             instance_count = 1,
             instance_buffer_addr = 0,
         })
+    }
+}
+
+scene_graph_get_render_objects :: proc(graph: ^SceneGraph, render_object_list: ^[dynamic]RenderObject) {
+    if graph == nil do return
+    // Traverse the scene graph, building render objects and adding them to the list
+    stack := make([]^SceneGraphNode, graph.depth)
+    defer delete(stack)
+    count: int = 1
+    node: ^SceneGraphNode
+    stack[0] = graph.root
+    for count > 0 {
+        // Pop the first node
+        count -= 1
+        node = stack[count]
+
+        // Add it to the render_object_list
+        node.get_render_object(node, render_object_list, node.world_transform)
+
+        // Push each child on to the stack in reverse order so they get popped in a consistent ordering
+        #reverse for child in node.children {
+            stack[count] = child
+            count += 1
+        }
+    }
+
+}
+
+scene_graph_create :: proc() -> SceneGraph {
+    return SceneGraph{
+        root = nil,
+        depth = 0,
     }
 }

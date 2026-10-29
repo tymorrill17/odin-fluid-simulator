@@ -27,28 +27,32 @@ CPUParticleSystem :: struct {
     current_particle_buffer_addr:   vk.DeviceAddress,  // Always points to the current in-use particle buffer address
     mesh:                           ^MeshAsset,         // Geometry to use for the particles
     material:                       ^MaterialInstance,  // Material pipeline to use for the rendered particles
-    transform:                      float4x4,
 }
 
-particle_system_get_render_object :: proc(system: ^CPUParticleSystem, out: ^[dynamic]RenderObject) {
-    append(out, RenderObject{
+ParticleNode :: struct {
+    using node:      SceneGraphNode,
+    particle_system: ^CPUParticleSystem,
+}
+
+particle_system_get_render_object :: proc(node: ^SceneGraphNode, render_object_list: ^[dynamic]RenderObject, transform: float4x4) {
+    node := (^ParticleNode)(node)
+    system := node.particle_system
+    append(render_object_list, RenderObject{
         index_count             = system.mesh.surfaces[0].count,
         first_index             = system.mesh.surfaces[0].start_index,
         index_buffer            = system.mesh.mesh_buffers.index_buffer.handle,
         material                = system.material,
-        transform               = system.transform,
+        transform               = transform,
         vertex_buffer_addr      = system.mesh.mesh_buffers.vertex_buffer_addr,
         instance_buffer_addr    = system.current_particle_buffer_addr,
         instance_count          = system.particle_count,
     })
 }
 
-particle_system_create :: proc(renderer: ^Renderer, max_particles: u32, origin: float3,
-    particle_mesh: ^MeshAsset, material: ^MaterialInstance) -> CPUParticleSystem {
+particle_system_create :: proc(renderer: ^Renderer, max_particles: u32, particle_mesh: ^MeshAsset, material: ^MaterialInstance) -> CPUParticleSystem {
 
     system := CPUParticleSystem{
         max_particles   = max_particles,
-        transform       = linalg.matrix4_translate_f32(origin),
         material        = material,
         mesh            = particle_mesh,
         particle_count  = 0, // for now

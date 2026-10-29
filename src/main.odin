@@ -145,9 +145,12 @@ main :: proc() {
     global_scene_buffer := render.buffer_create(&r, size_of(render.SceneData), u64(r.frames_in_flight), { .UNIFORM_BUFFER }, .CPU_WRITE)
     defer render.buffer_destroy(&r, &global_scene_buffer)
     global_scene_data := render.SceneData{
-        viewproj = (1), // initialize to identity matrix
-        view     = (1),
-        proj     = (1),
+        viewproj        = (1), // initialize to identity matrix
+        view            = (1),
+        proj            = (1),
+        ambient_color   = { 1,  1, 1, 1 },
+        sunlight_color  = { 1,  1, 1, 1 },
+        sunlight_dir    = { 1, -1, 1, 0 },
     }
 
     // Point the global descriptors to their buffers in the Renderer class
@@ -160,17 +163,6 @@ main :: proc() {
     defer render.mesh_destroy(&r, particle_mesh)
     fluid_material := fluidsim_get_material(&r)
     defer render.pipeline_destroy(&r, &fluid_material.pipeline)
-
-    // Load the example gltf files
-    monkey_filepath, _ := filepath.join({render.ASSET_DIR, "monkey.glb"}, context.allocator)
-    defer delete(monkey_filepath)
-    monkey_mesh := render.mesh_load_gltf(&r, monkey_filepath)
-    defer {
-        for mesh in monkey_mesh {
-            render.mesh_destroy(&r, mesh)
-        }
-        delete(monkey_mesh)
-    }
 
     particle_config       := DEFAULT_PARTICLE_CONFIG
     physics_config        := DEFAULT_PHYSICS_CONFIG
@@ -199,10 +191,21 @@ main :: proc() {
     bounding_box.max = { boundary_config.width, boundary_config.height, boundary_config.depth } * 0.5
     bounding_box.min = -bounding_box.max
 
-    fluidsim_particle_system := render.particle_system_create(&r, MAX_PARTICLES, (0), particle_mesh, &fluid_material)
+    fluidsim_particle_system := render.particle_system_create(&r, MAX_PARTICLES, particle_mesh, &fluid_material)
     // Dimension of the particle motion is inferred from bounding box dimension
     fluidsim_particle_system.motion = fluidsim_state_create(&fluidsim_particle_system, &particle_config, &physics_config, &bounding_box)
     defer render.particle_system_destroy(&fluidsim_particle_system, &r)
+
+    // TODO: change this later...
+    fluidsim_particle_scene_graph := render.scene_graph_create()
+    fluidsim_node := render.ParticleNode{
+        particle_system = &fluidsim_particle_system,
+        world_transform = 1,
+        local_transform = 1,
+        get_render_object = render.particle_system_get_render_object,
+    }
+    fluidsim_particle_scene_graph.root = (^render.SceneGraphNode)(&fluidsim_node)
+    fluidsim_particle_scene_graph.depth = 1
 
     r.background_type = .FragmentShader
     r.background_material = get_sky_material(&r, r.scene_descriptor_layout, &r.scene_descriptor)
@@ -262,9 +265,33 @@ main :: proc() {
     render.descriptor_writer_add_textures(&r.descriptor_writer, &texture_descriptor, 0, { error_texture }, .COMBINED_IMAGE_SAMPLER)
     render.descriptor_writer_update_sets(&r.descriptor_writer, &r)
 
+    // Load the example gltf files
+    monkey_filepath, _ := filepath.join({render.ASSET_DIR, "monkey.glb"}, context.allocator)
+    defer delete(monkey_filepath)
+    monkey_mesh := render.mesh_load_gltf(&r, monkey_filepath)
+    defer {
+        for mesh in monkey_mesh {
+            render.mesh_destroy(&r, mesh)
+        }
+        delete(monkey_mesh)
+    }
+
     monkey_material := get_test_gltf_material(&r, texture_descriptor_layout, &texture_descriptor)
     defer render.pipeline_destroy(&r, &monkey_material.pipeline)
-    monkey_pos := render.float3{ 0, 10, 7}
+    for mesh in monkey_mesh {
+        for &surface in mesh.surfaces do surface.material = &monkey_material
+    }
+
+    // TODO: change this later...
+    monkey_scene_graph := render.scene_graph_create()
+    monkey_node := render.MeshNode{
+        mesh = monkey_mesh[0],
+        world_transform = 1,
+        local_transform = 1,
+        get_render_object = render.mesh_asset_get_render_object,
+    }
+    monkey_scene_graph.root = (^render.SceneGraphNode)(&monkey_node)
+    monkey_scene_graph.depth = 1
 
     recording_timer := render.timer_create()
     for !render.window_should_close(&r) {
@@ -360,10 +387,8 @@ main :: proc() {
         render.particle_system_update(&fluidsim_particle_system, &r, r.frame_time)
 
         // Get the renderables
-        render.particle_system_get_render_object(&fluidsim_particle_system, &r.renderables)
-        for mesh in monkey_mesh {
-            render.mesh_get_render_objects_single_instance(mesh, &r.renderables, &monkey_material, monkey_pos)
-        }
+        render.scene_graph_get_render_objects(&fluidsim_particle_scene_graph, &r.renderables)
+        render.scene_graph_get_render_objects(&monkey_scene_graph, &r.renderables)
 
         render.draw(&r)
     }
