@@ -23,6 +23,7 @@ CameraData :: struct {
 
 CameraController :: struct {
     position:         float3, // position of camera
+    velocity:         float3,
     forward:          float3, // Where camera is pointing
     pitch:            f32,    // up/down, 0 is eye level
     orbit_distance:   f32,
@@ -31,6 +32,10 @@ CameraController :: struct {
 }
 
 g_world_up :: float3{ 0, 1, 0 }
+
+camera_update :: proc(camera: ^CameraController, delta_time: f32) {
+    camera.position += camera.velocity * delta_time
+}
 
 projection_set_orthographic :: proc(left, right, bottom, top, near, far: f32) -> float4x4 {
     proj: float4x4 = 1 // identity

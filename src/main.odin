@@ -297,6 +297,8 @@ main :: proc() {
         process_fluid_sim_inputs(&r.input_manager, &fluidsim_particle_system)
         process_camera_inputs(&r.input_manager, &camera_controller)
 
+        render.camera_update(&camera_controller, r.frame_time)
+
         imgui.SetNextWindowPos({ 10, 10 }, .FirstUseEver)
         imgui.SetNextWindowSize({ 380, 700 }, .FirstUseEver)
         if imgui.Begin("Fluid Simulator") {

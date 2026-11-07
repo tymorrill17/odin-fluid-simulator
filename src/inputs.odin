@@ -47,10 +47,7 @@ process_camera_inputs :: proc(input: ^render.InputManager, camera_controller: ^r
             move_direction -= up
         }
     }
-    move_dir_length := linalg.length(move_direction)
-    if linalg.length2(move_direction) > 0 {
-        camera_controller.position += move_direction / move_dir_length * camera_controller.move_speed * input.delta_time
-    }
+    camera_controller.velocity = linalg.normalize0(move_direction) * camera_controller.move_speed
 
     if input.mouse_captured {
         look_pressed  := (input.mouse_states[.left].pressed  || input.mouse_states[.right].pressed)
