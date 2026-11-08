@@ -39,7 +39,7 @@ MaterialPass :: enum {
 
 MaterialInstance :: struct {
     pipeline:   Pipeline,
-    descriptor: ^DescriptorSet,
+    descriptor: DescriptorSet,
     pass_type:  MaterialPass
 }
 
@@ -102,7 +102,6 @@ NodeData :: union {
 SceneGraph :: struct {
     root:       ^SceneGraphNode,
     node_list:  []SceneGraphNode,
-    depth:      int, // Depth of the graph (really a tree)
 }
 
 SceneGraphNode :: struct {
@@ -148,6 +147,12 @@ material_metallic_roughness_instance_create :: proc(renderer: ^Renderer, gltf: M
     return material
 }
 
+material_metallic_roughness_instance_destroy :: proc(material: ^MaterialMetallicRoughnessInstanceGLTF, renderer: ^Renderer) {
+    buffer_destroy(renderer, &material.resources.constants_buffer)
+    descriptor_set_destroy(&material.descriptor)
+    material^ = {}
+}
+
 material_metallic_roughness_create :: proc(renderer: ^Renderer) -> MaterialMetallicRoughnessGLTF {
 
     material_metallic_roughness_build_pipelines :: proc(renderer: ^Renderer, material: ^MaterialMetallicRoughnessGLTF) {
@@ -190,12 +195,10 @@ material_metallic_roughness_create :: proc(renderer: ^Renderer) -> MaterialMetal
     return material
 }
 
-// Textures are owned by the caller and the set layout is owned by the descriptor layout cache, so neither is destroyed here.
 material_metallic_roughness_destroy :: proc(material: ^MaterialMetallicRoughnessGLTF, renderer: ^Renderer) {
     pipeline_destroy(renderer, &material.opaque_pipeline)
     pipeline_destroy(renderer, &material.transparent_pipeline)
-    buffer_destroy(renderer, &material.resources.constants_buffer)
-    descriptor_set_destroy(&material.set)
+    // Textures are owned by the caller, and the set layout is owned by the cache, so don't worry about them here
     material^ = {}
 }
 
@@ -308,7 +311,10 @@ load_gltf :: proc(renderer: ^Renderer, filename: string) -> LoadedGLTF {
             return .LINEAR
         case .linear_mipmap_linear:
             return .LINEAR
+        case .undefined:
+            return .LINEAR
         }
+        return .LINEAR
     }
 
     get_mipmap_mode :: proc(filter: cgltf.filter_type) -> vk.SamplerMipmapMode {
@@ -326,7 +332,10 @@ load_gltf :: proc(renderer: ^Renderer, filename: string) -> LoadedGLTF {
             return .LINEAR
         case .linear:
             return .LINEAR
+        case .undefined:
+            return .LINEAR
         }
+        return .LINEAR
     }
 
     c_filename := strings.clone_to_cstring(filename)
@@ -344,7 +353,7 @@ load_gltf :: proc(renderer: ^Renderer, filename: string) -> LoadedGLTF {
     }
 
     gltf: LoadedGLTF
-    gltf.material_info = render.material_metallic_roughness_create(&r)
+    gltf.material_info = material_metallic_roughness_create(renderer)
 
     // Create vulkan samplers from the gltf file
     gltf.samplers = make([]vk.Sampler, len(data.samplers))
@@ -363,8 +372,8 @@ load_gltf :: proc(renderer: ^Renderer, filename: string) -> LoadedGLTF {
         }
     }
 
-    gltf.materials  = make([]MaterialMetallicRoughnessGLTF, len(data.materials))
-    gltf.meshes     = make([]MaterialMetallicRoughnessGLTF, len(data.meshes))
+    gltf.materials  = make([]MaterialMetallicRoughnessInstanceGLTF, len(data.materials) + 1)
+    gltf.meshes     = make([]MeshAsset, len(data.meshes))
     gltf.images     = make([]Image, len(data.images))
 
     for image, i in data.images {
@@ -380,14 +389,14 @@ load_gltf :: proc(renderer: ^Renderer, filename: string) -> LoadedGLTF {
 
         // Extract the color texture from the gltf file if it exists
         tex_view := material.pbr_metallic_roughness.base_color_texture
-        if tex_view != nil {
+        if tex_view.texture != nil {
             if tex_view.texture.image_ != nil do color_texture.image = gltf.images[cgltf.image_index(data, tex_view.texture.image_)]
             if tex_view.texture.sampler != nil do color_texture.sampler = gltf.samplers[cgltf.sampler_index(data, tex_view.texture.sampler)]
         }
 
         // Extract the metal_rough texture from the gltf file if it exists
         tex_view = material.pbr_metallic_roughness.metallic_roughness_texture
-        if tex_view != nil {
+        if tex_view.texture != nil {
             if tex_view.texture.image_ != nil do metal_rough_texture.image = gltf.images[cgltf.image_index(data, tex_view.texture.image_)]
             if tex_view.texture.sampler != nil do metal_rough_texture.sampler = gltf.samplers[cgltf.sampler_index(data, tex_view.texture.sampler)]
         }
@@ -396,6 +405,11 @@ load_gltf :: proc(renderer: ^Renderer, filename: string) -> LoadedGLTF {
             material.pbr_metallic_roughness.base_color_factor, float4{material.pbr_metallic_roughness.metallic_factor, material.pbr_metallic_roughness.roughness_factor, 0, 0},
             pass_type)
     }
+
+    // Create default material (glTF spec says: white, metallic 1, roughness 1)
+    default_material := &gltf.materials[len(data.materials)]
+    default_material^ = material_metallic_roughness_instance_create(renderer, gltf.material_info,
+        g_white_texture, g_white_texture, { 1, 1, 1, 1 }, { 1, 1, 0, 0 }, .opaque)
 
 
     // Now we load in all the meshes and store them in the mesh array
@@ -415,6 +429,7 @@ load_gltf :: proc(renderer: ^Renderer, filename: string) -> LoadedGLTF {
             new_surface: GeometricSurface
             new_surface.start_index = u32(len(indices))
             new_surface.count = u32(primitive.indices.count)
+            new_surface.material = primitive.material != nil ? &gltf.materials[cgltf.material_index(data, primitive.material)].instance : &default_material.instance
 
             first_vertex := uint(len(vertices))
             reserve(&indices, uint(len(indices)) + primitive.indices.count)
@@ -489,31 +504,32 @@ load_gltf :: proc(renderer: ^Renderer, filename: string) -> LoadedGLTF {
     // Now that the meshes are loaded, we build the scene graph from the nodes in the gltf file
     node_count := len(data.nodes)
     gltf.scene_graph.node_list = make([]SceneGraphNode, node_count + 1)
-    gltf.scene_graph.root = gltf.scene_graph.node_list[node_count]
+    gltf.scene_graph.root = &gltf.scene_graph.node_list[node_count]
     gltf.scene_graph.root.local_transform = 1
+
     // The first pass will just load all the nodes
-    for node, i in data.nodes {
+    for &node, i in data.nodes {
         new_node := &gltf.scene_graph.node_list[i]
 
         if node.mesh != nil {
-            new_node.data.(MeshNodeData).mesh = gltf.meshes[cgltf.mesh_index(data, node.mesh)]
+            new_node.data = MeshNodeData{ mesh = &gltf.meshes[cgltf.mesh_index(data, node.mesh)] }
         }
 
-        // Also fill the local transform. We will fill the world transform on the second pass
+        // Also fill the local transform. The world transform is computed once the scene hierarchy is built
         if node.has_matrix {
-            new_node.local_transform = node.matrix_
+            new_node.local_transform = transmute(float4x4)node.matrix_
         } else {
-            translation: float3     = node.has_translation ? node.translation : 0
-            rotation: quaternion128 = node.has_rotation    ? node.rotation    : 1
-            scale: float3           = node.has_scale       ? node.scale       : 1
+            translation: float3     = node.has_translation ? node.translation                      : 0
+            rotation: quaternion128 = node.has_rotation    ? transmute(quaternion128)node.rotation : 1
+            scale: float3           = node.has_scale       ? node.scale                            : 1
             new_node.local_transform = linalg.matrix4_from_trs_f32(translation, rotation, scale)
         }
     }
 
     // Now do a second pass to build the parent-child relationships
-    for i in len(gltf.scene_graph.node_list) {
-        gltf_node := data.nodes[i]
-        node      := gltf.scene_graph.node_list[i]
+    for i in 0..<node_count {
+        gltf_node := &data.nodes[i]
+        node      := &gltf.scene_graph.node_list[i]
 
         node.children = make([]^SceneGraphNode, len(gltf_node.children))
         for gltf_child, c in gltf_node.children {
@@ -527,9 +543,9 @@ load_gltf :: proc(renderer: ^Renderer, filename: string) -> LoadedGLTF {
     scene := data.scene // This is what the gltf file thinks should be the active scene index
     // If there are scenes but none is chosen, then default to the first one.
     // We are assuming there wouldn't be a scene selected if there were no scenes in the file.
-    if scene == nil && len(data.scenes) > 0 do scene = data.scenes[0]
+    if scene == nil && len(data.scenes) > 0 do scene = &data.scenes[0]
 
-    root_nodes := make([dynaimc]^SceneGraphNode)
+    root_nodes := make([dynamic]^SceneGraphNode)
     if scene != nil {
         // scene.nodes only contains the root nodes of the scene
         for node in scene.nodes {
@@ -538,14 +554,37 @@ load_gltf :: proc(renderer: ^Renderer, filename: string) -> LoadedGLTF {
     } else {
         // No scene, just a collection of assets. So every node with no parent is a root node
         for node, i in data.nodes {
-            if node.parent == nil do append(&root_nodes, gltf.scene_graph.node_list[i])
+            if node.parent == nil do append(&root_nodes, &gltf.scene_graph.node_list[i])
         }
     }
     // All scene root nodes fall under an empty scene graph node
     gltf.scene_graph.root.children = root_nodes[:]
     for child in gltf.scene_graph.root.children do child.parent = gltf.scene_graph.root
 
+    scene_node_update_transforms(gltf.scene_graph.root, 1)
+
     return gltf
+}
+
+loaded_gltf_destroy :: proc(renderer: ^Renderer, gltf: ^LoadedGLTF) {
+    for &node in gltf.scene_graph.node_list do delete(node.children)
+    delete(gltf.scene_graph.node_list)
+
+    for &mesh in gltf.meshes {
+        mesh_buffers_destroy(renderer, &mesh.mesh_buffers)
+        delete(mesh.surfaces)
+    }
+    delete(gltf.meshes)
+
+    for &material in gltf.materials do material_metallic_roughness_instance_destroy(&material, renderer)
+    delete(gltf.materials)
+    material_metallic_roughness_destroy(&gltf.material_info, renderer)
+
+    for sampler in gltf.samplers do vk.DestroySampler(renderer.logical_device, sampler, nil)
+    delete(gltf.samplers)
+    delete(gltf.images) // images currently all alias g_error_texture, which is owned elsewhere
+
+    gltf^ = {}
 }
 
 scene_node_update_transforms :: proc(node: ^SceneGraphNode, parent_world_transform: float4x4) {
@@ -573,17 +612,13 @@ mesh_asset_get_render_object :: proc(node: ^SceneGraphNode, render_object_list: 
 }
 
 scene_graph_get_render_objects :: proc(graph: ^SceneGraph, render_object_list: ^[dynamic]RenderObject) {
-    if graph == nil do return
-    // Traverse the scene graph, building render objects and adding them to the list
-    stack := make([]^SceneGraphNode, graph.depth)
+    if graph == nil || graph.root == nil do return
+    // Traverse the scene graph, building render objects and adding them to the list.
+    stack := make([dynamic]^SceneGraphNode, 0, 64)
     defer delete(stack)
-    count: int = 1
-    node: ^SceneGraphNode
-    stack[0] = graph.root
-    for count > 0 {
-        // Pop the first node
-        count -= 1
-        node = stack[count]
+    append(&stack, graph.root)
+    for len(stack) > 0 {
+        node := pop(&stack)
 
         // Add it to the render_object_list
         switch node_type in node.data {
@@ -596,17 +631,10 @@ scene_graph_get_render_objects :: proc(graph: ^SceneGraph, render_object_list: ^
         }
 
         // Push each child on to the stack in reverse order so they get popped in a consistent ordering
-        #reverse for child in node.children {
-            stack[count] = child
-            count += 1
-        }
+        #reverse for child in node.children do append(&stack, child)
     }
-
 }
 
 scene_graph_create :: proc() -> SceneGraph {
-    return SceneGraph{
-        root = nil,
-        depth = 0,
-    }
+    return SceneGraph{ root = nil }
 }

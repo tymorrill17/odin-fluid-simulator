@@ -86,7 +86,7 @@ get_sky_material :: proc(renderer: ^render.Renderer, descriptor_layout: vk.Descr
 
     material: render.MaterialInstance
     material.pass_type = .opaque
-    material.descriptor = descriptor_set
+    material.descriptor = descriptor_set^
 
     material.pipeline = render.pipeline_cfg_build_pipeline(&pipeline_cfg, renderer)
     return material
@@ -168,13 +168,12 @@ main :: proc() {
 
     // TODO: change this later...
     fluidsim_particle_scene_graph := render.scene_graph_create()
-    fluidsim_node := render.ParticleNode{
+    fluidsim_node := render.SceneGraphNode{
         world_transform = 1,
         local_transform = 1,
         data = render.ParticleNodeData{ particle_system = &fluidsim_particle_system },
     }
-    fluidsim_particle_scene_graph.root = (^render.SceneGraphNode)(&fluidsim_node)
-    fluidsim_particle_scene_graph.depth = 1
+    fluidsim_particle_scene_graph.root = &fluidsim_node
 
     r.background_type = .FragmentShader
     r.background_material = get_sky_material(&r, r.scene_descriptor_layout, &r.scene_descriptor)
@@ -222,65 +221,44 @@ main :: proc() {
     render.g_white_texture = render.texture_create_from_data(&r, &white, vk.Extent3D{ 1, 1, 1 }, sampler_nearest, .R8G8B8A8_UNORM, { .SAMPLED })
     render.g_error_texture = render.texture_create_from_data(&r, &error_pixels, vk.Extent3D{ 16, 16, 1 }, sampler_nearest, .R8G8B8A8_UNORM, { .SAMPLED })
     defer {
-        render.texture_destroy(&r, &white_texture)
+        render.texture_destroy(&r, &render.g_white_texture)
         render.texture_destroy(&r, &black_texture)
         render.texture_destroy(&r, &grey_texture)
-        render.texture_destroy(&r, &error_texture)
+        render.texture_destroy(&r, &render.g_error_texture)
     }
 
     render.descriptor_layout_builder_add_binding(&r.descriptor_layout_builder, 0, .COMBINED_IMAGE_SAMPLER, 1, { .FRAGMENT })
     texture_descriptor_layout := render.descriptor_layout_builder_build(&r.descriptor_layout_builder, &r)
     texture_descriptor := render.descriptor_set_create(&r, texture_descriptor_layout)
-    render.descriptor_writer_add_textures(&r.descriptor_writer, &texture_descriptor, 0, { error_texture }, .COMBINED_IMAGE_SAMPLER)
+    render.descriptor_writer_add_textures(&r.descriptor_writer, &texture_descriptor, 0, { render.g_error_texture }, .COMBINED_IMAGE_SAMPLER)
     render.descriptor_writer_update_sets(&r.descriptor_writer, &r)
 
     // Load the example gltf files
     monkey_filepath, _ := filepath.join({render.ASSET_DIR, "monkey.glb"}, context.allocator)
     defer delete(monkey_filepath)
-    monkey_mesh := render.mesh_load_gltf(&r, monkey_filepath)
-    defer {
-        for mesh in monkey_mesh {
-            render.mesh_destroy(&r, mesh)
-        }
-        delete(monkey_mesh)
-    }
+    monkey_gltf := render.load_gltf(&r, monkey_filepath)
+    defer render.loaded_gltf_destroy(&r, &monkey_gltf)
 
-    monkey_material: render.MaterialInstance
-    monkey_material.pass_type = .opaque
-    monkey_material.pipeline = gltf.opaque_pipeline
-    monkey_material.descriptor = &gltf.set
-    for mesh in monkey_mesh {
-        for &surface in mesh.surfaces do surface.material = &monkey_material
-    }
+    monkey_gltf.scene_graph.root.local_transform = linalg.matrix4_translate_f32({ 0, 0, 3 })
+    render.scene_node_update_transforms(monkey_gltf.scene_graph.root, 1) // Must propagate the local transform change to the children
 
     // TODO: change this later...
-    monkey_scene_graph := render.scene_graph_create()
-    monkey_node := render.SceneGraphNode{
-        world_transform = linalg.matrix4_translate_f32({ 0, 0, 3 }),
-        local_transform = 1,
-        data = render.MeshNodeData{ mesh = monkey_mesh }
-    }
-    monkey_scene_graph.root = (^render.SceneGraphNode)(&monkey_node)
-    monkey_scene_graph.depth = 1
-
-    // TODO: change this later...
-    gltf_grey := render.material_metallic_roughness_create(&r, grey_texture, grey_texture)
+    gltf_grey := render.material_metallic_roughness_create(&r)
     defer render.material_metallic_roughness_destroy(&gltf_grey, &r)
-    floor_material: render.MaterialInstance
-    floor_material.pass_type = .opaque
-    floor_material.pipeline = gltf_grey.opaque_pipeline
-    floor_material.descriptor = &gltf_grey.set
+    floor_material: render.MaterialMetallicRoughnessInstanceGLTF
+    floor_material = render.material_metallic_roughness_instance_create(&r, gltf_grey, grey_texture, grey_texture,
+        { 1, 1, 1, 1 }, { 1, 1, 0, 0 }, .opaque)
+    defer render.material_metallic_roughness_instance_destroy(&floor_material, &r)
     floor_mesh := render.mesh_create_rectangle(&r, 10, 10)
     defer render.mesh_destroy(&r, floor_mesh)
-    for &surface in floor_mesh.surfaces do surface.material = &floor_material
+    for &surface in floor_mesh.surfaces do surface.material = &floor_material.instance
     floor_scene_graph := render.scene_graph_create()
     floor_node := render.SceneGraphNode{
         world_transform = linalg.matrix4_translate_f32({ 0, -2, 0 }) * linalg.matrix4_rotate_f32(-math.PI / 2, { 1, 0, 0 }),
         local_transform = 1,
         data = render.MeshNodeData{ mesh = floor_mesh },
     }
-    floor_scene_graph.root = (^render.SceneGraphNode)(&floor_node)
-    floor_scene_graph.depth = 1
+    floor_scene_graph.root = &floor_node
 
     recording_timer := render.timer_create()
     for !render.window_should_close(&r) {
@@ -385,7 +363,7 @@ main :: proc() {
 
         // Get the renderables
         render.scene_graph_get_render_objects(&fluidsim_particle_scene_graph, &r.renderables)
-        render.scene_graph_get_render_objects(&monkey_scene_graph, &r.renderables)
+        render.scene_graph_get_render_objects(&monkey_gltf.scene_graph, &r.renderables)
         render.scene_graph_get_render_objects(&floor_scene_graph, &r.renderables)
 
         render.draw(&r)

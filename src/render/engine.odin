@@ -436,9 +436,9 @@ draw :: proc(renderer: ^Renderer) {
         }
         if render_object.material != last_material {
             // Then we need to bind the new material descriptors (if they exist)
-            if render_object.material.descriptor != nil {
+            if render_object.material.descriptor.handle != 0 {
                 descriptor_set_bind(cmd, render_object.material.pipeline.bind_point, render_object.material.pipeline.layout,
-                    render_object.material.descriptor, 1)
+                    &render_object.material.descriptor, 1)
             }
             last_material = render_object.material
         }
