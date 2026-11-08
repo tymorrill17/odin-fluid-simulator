@@ -8,10 +8,23 @@ import "core:math/linalg"
 
 ASSET_DIR :: #config(ASSET_DIR, ".")
 
+// TODO: Find a better way to initialize the error texture and error models
+g_error_texture: Texture
+g_white_texture: Texture
+
+LoadedGLTF :: struct {
+    meshes:        []MeshAsset,
+    images:        []Image,
+    material_info: MaterialMetallicRoughnessGLTF,
+    materials:     []MaterialMetallicRoughnessInstanceGLTF,
+    scene_graph:   SceneGraph,
+    samplers:      []vk.Sampler,
+}
+
 RenderObject :: struct {
     index_count:            u32,
     first_index:            u32,
-    index_buffer:           vk.Buffer, // index buffer for the mesh
+    index_buffer:           vk.Buffer,         // index buffer for the mesh
     material:               ^MaterialInstance,
     transform:              float4x4,
     vertex_buffer_addr:     vk.DeviceAddress,
@@ -30,12 +43,8 @@ MaterialInstance :: struct {
     pass_type:  MaterialPass
 }
 
-MaterialMetallicRoughnessGLTF :: struct {
-    opaque_pipeline:        Pipeline,
-    transparent_pipeline:   Pipeline,
-    set_layout:             vk.DescriptorSetLayout,
-    set:                    DescriptorSet,
-
+MaterialMetallicRoughnessInstanceGLTF :: struct {
+    using instance: MaterialInstance,
     constants: struct {
         color_factors:          float4,
         metal_rough_factors:    float4,
@@ -47,6 +56,12 @@ MaterialMetallicRoughnessGLTF :: struct {
         metal_rough_texture:     Texture,
         constants_buffer:        Buffer,
     },
+}
+
+MaterialMetallicRoughnessGLTF :: struct {
+    opaque_pipeline:        Pipeline,
+    transparent_pipeline:   Pipeline,
+    set_layout:             vk.DescriptorSetLayout,
 }
 
 GeometricSurface :: struct {
@@ -75,9 +90,19 @@ MeshVertex :: struct {
     color:      float4,
 };
 
+MeshNodeData     :: struct { mesh: ^MeshAsset }
+ParticleNodeData :: struct { particle_system: ^CPUParticleSystem }
+
+NodeData :: union {
+    MeshNodeData,
+    ParticleNodeData,
+    // nil => empty transform node
+}
+
 SceneGraph :: struct {
-    root:  ^SceneGraphNode,
-    depth: int, // Depth of the graph (really a tree)
+    root:       ^SceneGraphNode,
+    node_list:  []SceneGraphNode,
+    depth:      int, // Depth of the graph (really a tree)
 }
 
 SceneGraphNode :: struct {
@@ -85,15 +110,45 @@ SceneGraphNode :: struct {
     children:          []^SceneGraphNode,
     local_transform:   float4x4,
     world_transform:   float4x4,
-    get_render_object: proc(^SceneGraphNode, ^[dynamic]RenderObject, float4x4),
+    data:              NodeData,
 }
 
-MeshNode :: struct {
-    using node: SceneGraphNode,
-    mesh:       ^MeshAsset,
+
+material_metallic_roughness_instance_create :: proc(renderer: ^Renderer, gltf: MaterialMetallicRoughnessGLTF,
+    color_texture, metal_rough_texture: Texture, color_factors, metal_rough_factors: [4]f32,
+    pass_type: MaterialPass) -> MaterialMetallicRoughnessInstanceGLTF {
+
+    material: MaterialMetallicRoughnessInstanceGLTF
+
+    material.resources.color_texture = color_texture
+    material.resources.metal_rough_texture = metal_rough_texture
+
+    material.constants.color_factors = color_factors
+    material.constants.metal_rough_factors = metal_rough_factors
+    material.resources.constants_buffer = buffer_create(renderer, size_of(material.constants), 1, { .UNIFORM_BUFFER, .TRANSFER_DST }, .GPU_ONLY_ACCESS)
+    buffer_write_data(renderer, &material.resources.constants_buffer, &material.constants, size_of(material.constants))
+
+    material.descriptor = descriptor_set_create(renderer, gltf.set_layout)
+    descriptor_writer_add_buffers(&renderer.descriptor_writer, &material.descriptor, 0,
+        { material.resources.constants_buffer }, .UNIFORM_BUFFER)
+    descriptor_writer_add_textures(&renderer.descriptor_writer, &material.descriptor, 1,
+        { material.resources.color_texture }, .COMBINED_IMAGE_SAMPLER)
+    descriptor_writer_add_textures(&renderer.descriptor_writer, &material.descriptor, 2,
+        { material.resources.metal_rough_texture }, .COMBINED_IMAGE_SAMPLER)
+    descriptor_writer_update_sets(&renderer.descriptor_writer, renderer)
+
+    material.pass_type = pass_type
+    switch pass_type {
+    case .opaque:
+        material.pipeline = gltf.opaque_pipeline
+    case .transparent:
+        material.pipeline = gltf.transparent_pipeline
+    }
+
+    return material
 }
 
-material_metallic_roughness_create :: proc(renderer: ^Renderer, color_texture: Texture, metal_rough_texture: Texture) -> MaterialMetallicRoughnessGLTF {
+material_metallic_roughness_create :: proc(renderer: ^Renderer) -> MaterialMetallicRoughnessGLTF {
 
     material_metallic_roughness_build_pipelines :: proc(renderer: ^Renderer, material: ^MaterialMetallicRoughnessGLTF) {
         pipeline_cfg := pipeline_cfg_create()
@@ -125,27 +180,10 @@ material_metallic_roughness_create :: proc(renderer: ^Renderer, color_texture: T
     }
 
     material: MaterialMetallicRoughnessGLTF
-    material.resources.color_texture = color_texture
-    material.resources.metal_rough_texture = metal_rough_texture
-
-    material.constants.color_factors = { 1, 1, 1, 1 }
-    material.constants.metal_rough_factors = { 1, 0.5, 0, 0 }
-    material.resources.constants_buffer = buffer_create(renderer, size_of(material.constants), 1, { .UNIFORM_BUFFER, .TRANSFER_DST }, .GPU_ONLY_ACCESS)
-    buffer_write_data(renderer, &material.resources.constants_buffer, &material.constants, size_of(material.constants))
-
     descriptor_layout_builder_add_binding(&renderer.descriptor_layout_builder, 0, .UNIFORM_BUFFER, 1, { .VERTEX, .FRAGMENT })
     descriptor_layout_builder_add_binding(&renderer.descriptor_layout_builder, 1, .COMBINED_IMAGE_SAMPLER, 1, { .VERTEX, .FRAGMENT })
     descriptor_layout_builder_add_binding(&renderer.descriptor_layout_builder, 2, .COMBINED_IMAGE_SAMPLER, 1, { .VERTEX, .FRAGMENT })
     material.set_layout = descriptor_layout_builder_build(&renderer.descriptor_layout_builder, renderer)
-    material.set = descriptor_set_create(renderer, material.set_layout)
-
-    descriptor_writer_add_buffers(&renderer.descriptor_writer, &material.set, 0,
-        { material.resources.constants_buffer }, .UNIFORM_BUFFER)
-    descriptor_writer_add_textures(&renderer.descriptor_writer, &material.set, 1,
-        { material.resources.color_texture }, .COMBINED_IMAGE_SAMPLER)
-    descriptor_writer_add_textures(&renderer.descriptor_writer, &material.set, 2,
-        { material.resources.metal_rough_texture }, .COMBINED_IMAGE_SAMPLER)
-    descriptor_writer_update_sets(&renderer.descriptor_writer, renderer)
 
     material_metallic_roughness_build_pipelines(renderer, &material)
 
@@ -253,7 +291,44 @@ mesh_destroy :: proc(renderer: ^Renderer, mesh: ^MeshAsset) {
     free(mesh)
 }
 
-mesh_load_gltf :: proc(renderer: ^Renderer, filename: string) -> []^MeshAsset {
+load_gltf :: proc(renderer: ^Renderer, filename: string) -> LoadedGLTF {
+
+    get_filter :: proc(filter: cgltf.filter_type) -> vk.Filter {
+        switch filter {
+        case .nearest:
+            return .NEAREST
+        case .nearest_mipmap_nearest:
+            return .NEAREST
+        case .nearest_mipmap_linear:
+            return .NEAREST
+
+        case .linear:
+            return .LINEAR
+        case .linear_mipmap_nearest:
+            return .LINEAR
+        case .linear_mipmap_linear:
+            return .LINEAR
+        }
+    }
+
+    get_mipmap_mode :: proc(filter: cgltf.filter_type) -> vk.SamplerMipmapMode {
+        switch filter {
+        case .nearest_mipmap_nearest:
+            return .NEAREST
+        case .linear_mipmap_nearest:
+            return .NEAREST
+
+        case .nearest_mipmap_linear:
+            return .LINEAR
+        case .linear_mipmap_linear:
+            return .LINEAR
+        case .nearest:
+            return .LINEAR
+        case .linear:
+            return .LINEAR
+        }
+    }
+
     c_filename := strings.clone_to_cstring(filename)
     defer delete(c_filename)
 
@@ -268,17 +343,69 @@ mesh_load_gltf :: proc(renderer: ^Renderer, filename: string) -> []^MeshAsset {
         log.panicf("Failed to load GLTF buffers from %s!", filename)
     }
 
-    meshes := make([]^MeshAsset, len(data.meshes))
+    gltf: LoadedGLTF
+    gltf.material_info = render.material_metallic_roughness_create(&r)
 
+    // Create vulkan samplers from the gltf file
+    gltf.samplers = make([]vk.Sampler, len(data.samplers))
+    for sampler, i in data.samplers {
+        sampler_info := vk.SamplerCreateInfo{
+            sType = .SAMPLER_CREATE_INFO,
+            maxLod = vk.LOD_CLAMP_NONE,
+            minLod = 0,
+            magFilter = get_filter(sampler.mag_filter),
+            minFilter = get_filter(sampler.min_filter),
+            mipmapMode = get_mipmap_mode(sampler.min_filter),
+        }
+
+        if vk.CreateSampler(renderer.logical_device, &sampler_info, nil, &gltf.samplers[i]) != .SUCCESS {
+            log.panicf("Failed to create sampler from GLTF file %s!", filename)
+        }
+    }
+
+    gltf.materials  = make([]MaterialMetallicRoughnessGLTF, len(data.materials))
+    gltf.meshes     = make([]MaterialMetallicRoughnessGLTF, len(data.meshes))
+    gltf.images     = make([]Image, len(data.images))
+
+    for image, i in data.images {
+        gltf.images[i] = g_error_texture.image
+    }
+
+    for material, i in data.materials {
+        pass_type: MaterialPass = material.alpha_mode == .blend ? .transparent : .opaque
+
+        // Set the color and metal_rough textures to white as a default
+        color_texture: Texture = g_white_texture
+        metal_rough_texture: Texture = g_white_texture
+
+        // Extract the color texture from the gltf file if it exists
+        tex_view := material.pbr_metallic_roughness.base_color_texture
+        if tex_view != nil {
+            if tex_view.texture.image_ != nil do color_texture.image = gltf.images[cgltf.image_index(data, tex_view.texture.image_)]
+            if tex_view.texture.sampler != nil do color_texture.sampler = gltf.samplers[cgltf.sampler_index(data, tex_view.texture.sampler)]
+        }
+
+        // Extract the metal_rough texture from the gltf file if it exists
+        tex_view = material.pbr_metallic_roughness.metallic_roughness_texture
+        if tex_view != nil {
+            if tex_view.texture.image_ != nil do metal_rough_texture.image = gltf.images[cgltf.image_index(data, tex_view.texture.image_)]
+            if tex_view.texture.sampler != nil do metal_rough_texture.sampler = gltf.samplers[cgltf.sampler_index(data, tex_view.texture.sampler)]
+        }
+
+        gltf.materials[i] = material_metallic_roughness_instance_create(renderer, gltf.material_info, color_texture, metal_rough_texture,
+            material.pbr_metallic_roughness.base_color_factor, float4{material.pbr_metallic_roughness.metallic_factor, material.pbr_metallic_roughness.roughness_factor, 0, 0},
+            pass_type)
+    }
+
+
+    // Now we load in all the meshes and store them in the mesh array
     indices := make([dynamic]u32)
     vertices := make([dynamic]MeshVertex)
     defer delete(indices)
     defer delete(vertices)
-
     for mesh, m in data.meshes {
-        new_mesh := new(MeshAsset)
-        new_mesh.name = string(mesh.name)
-        new_mesh.surfaces = make([]GeometricSurface, len(mesh.primitives))
+        gltf.meshes[m].name = string(mesh.name)
+        gltf.meshes[m].surfaces = make([]GeometricSurface, len(mesh.primitives))
 
         clear(&indices)
         clear(&vertices)
@@ -353,20 +480,84 @@ mesh_load_gltf :: proc(renderer: ^Renderer, filename: string) -> []^MeshAsset {
                 }
             }
 
-            new_mesh.surfaces[p] = new_surface
+            gltf.meshes[m].surfaces[p] = new_surface
         }
 
-        new_mesh.mesh_buffers = mesh_upload_to_GPU(renderer, vertices[:], indices[:])
-        meshes[m] = new_mesh
+        gltf.meshes[m].mesh_buffers = mesh_upload_to_GPU(renderer, vertices[:], indices[:])
     }
 
-    return meshes
+    // Now that the meshes are loaded, we build the scene graph from the nodes in the gltf file
+    node_count := len(data.nodes)
+    gltf.scene_graph.node_list = make([]SceneGraphNode, node_count + 1)
+    gltf.scene_graph.root = gltf.scene_graph.node_list[node_count]
+    gltf.scene_graph.root.local_transform = 1
+    // The first pass will just load all the nodes
+    for node, i in data.nodes {
+        new_node := &gltf.scene_graph.node_list[i]
+
+        if node.mesh != nil {
+            new_node.data.(MeshNodeData).mesh = gltf.meshes[cgltf.mesh_index(data, node.mesh)]
+        }
+
+        // Also fill the local transform. We will fill the world transform on the second pass
+        if node.has_matrix {
+            new_node.local_transform = node.matrix_
+        } else {
+            translation: float3     = node.has_translation ? node.translation : 0
+            rotation: quaternion128 = node.has_rotation    ? node.rotation    : 1
+            scale: float3           = node.has_scale       ? node.scale       : 1
+            new_node.local_transform = linalg.matrix4_from_trs_f32(translation, rotation, scale)
+        }
+    }
+
+    // Now do a second pass to build the parent-child relationships
+    for i in len(gltf.scene_graph.node_list) {
+        gltf_node := data.nodes[i]
+        node      := gltf.scene_graph.node_list[i]
+
+        node.children = make([]^SceneGraphNode, len(gltf_node.children))
+        for gltf_child, c in gltf_node.children {
+            child := &gltf.scene_graph.node_list[cgltf.node_index(data, gltf_child)]
+            child.parent = node
+            node.children[c] = child
+        }
+    }
+
+    // Now to organize by scenes
+    scene := data.scene // This is what the gltf file thinks should be the active scene index
+    // If there are scenes but none is chosen, then default to the first one.
+    // We are assuming there wouldn't be a scene selected if there were no scenes in the file.
+    if scene == nil && len(data.scenes) > 0 do scene = data.scenes[0]
+
+    root_nodes := make([dynaimc]^SceneGraphNode)
+    if scene != nil {
+        // scene.nodes only contains the root nodes of the scene
+        for node in scene.nodes {
+            append(&root_nodes, &gltf.scene_graph.node_list[cgltf.node_index(data, node)])
+        }
+    } else {
+        // No scene, just a collection of assets. So every node with no parent is a root node
+        for node, i in data.nodes {
+            if node.parent == nil do append(&root_nodes, gltf.scene_graph.node_list[i])
+        }
+    }
+    // All scene root nodes fall under an empty scene graph node
+    gltf.scene_graph.root.children = root_nodes[:]
+    for child in gltf.scene_graph.root.children do child.parent = gltf.scene_graph.root
+
+    return gltf
+}
+
+scene_node_update_transforms :: proc(node: ^SceneGraphNode, parent_world_transform: float4x4) {
+    node.world_transform = parent_world_transform * node.local_transform
+    for child in node.children {
+        scene_node_update_transforms(child, node.world_transform)
+    }
 }
 
 // Converts MeshAsset to a RenderObject
 mesh_asset_get_render_object :: proc(node: ^SceneGraphNode, render_object_list: ^[dynamic]RenderObject, transform: float4x4) {
-    node := (^MeshNode)(node)
-    mesh := node.mesh
+    mesh := node.data.(MeshNodeData).mesh
     for surface in mesh.surfaces {
         append(render_object_list, RenderObject{
             index_count = surface.count,
@@ -395,7 +586,14 @@ scene_graph_get_render_objects :: proc(graph: ^SceneGraph, render_object_list: ^
         node = stack[count]
 
         // Add it to the render_object_list
-        node.get_render_object(node, render_object_list, node.world_transform)
+        switch node_type in node.data {
+        case MeshNodeData:
+            mesh_asset_get_render_object(node, render_object_list, node.world_transform)
+        case ParticleNodeData:
+            particle_system_get_render_object(node, render_object_list, node.world_transform)
+        case:
+            // Nothing to draw, don't add anything to the render list
+        }
 
         // Push each child on to the stack in reverse order so they get popped in a consistent ordering
         #reverse for child in node.children {

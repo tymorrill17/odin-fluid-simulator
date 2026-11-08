@@ -169,10 +169,9 @@ main :: proc() {
     // TODO: change this later...
     fluidsim_particle_scene_graph := render.scene_graph_create()
     fluidsim_node := render.ParticleNode{
-        particle_system = &fluidsim_particle_system,
         world_transform = 1,
         local_transform = 1,
-        get_render_object = render.particle_system_get_render_object,
+        data = render.ParticleNodeData{ particle_system = &fluidsim_particle_system },
     }
     fluidsim_particle_scene_graph.root = (^render.SceneGraphNode)(&fluidsim_node)
     fluidsim_particle_scene_graph.depth = 1
@@ -218,10 +217,10 @@ main :: proc() {
         vk.DestroySampler(r.logical_device, sampler_linear, nil)
     }
 
-    white_texture := render.texture_create_from_data(&r, &white, vk.Extent3D{ 1, 1, 1 }, sampler_nearest, .R8G8B8A8_UNORM, { .SAMPLED })
     black_texture := render.texture_create_from_data(&r, &black, vk.Extent3D{ 1, 1, 1 }, sampler_nearest, .R8G8B8A8_UNORM, { .SAMPLED })
     grey_texture  := render.texture_create_from_data(&r, &grey,  vk.Extent3D{ 1, 1, 1 }, sampler_nearest, .R8G8B8A8_UNORM, { .SAMPLED })
-    error_texture := render.texture_create_from_data(&r, &error_pixels, vk.Extent3D{ 16, 16, 1 }, sampler_nearest, .R8G8B8A8_UNORM, { .SAMPLED })
+    render.g_white_texture = render.texture_create_from_data(&r, &white, vk.Extent3D{ 1, 1, 1 }, sampler_nearest, .R8G8B8A8_UNORM, { .SAMPLED })
+    render.g_error_texture = render.texture_create_from_data(&r, &error_pixels, vk.Extent3D{ 16, 16, 1 }, sampler_nearest, .R8G8B8A8_UNORM, { .SAMPLED })
     defer {
         render.texture_destroy(&r, &white_texture)
         render.texture_destroy(&r, &black_texture)
@@ -246,8 +245,6 @@ main :: proc() {
         delete(monkey_mesh)
     }
 
-    gltf := render.material_metallic_roughness_create(&r, error_texture, error_texture)
-    defer render.material_metallic_roughness_destroy(&gltf, &r)
     monkey_material: render.MaterialInstance
     monkey_material.pass_type = .opaque
     monkey_material.pipeline = gltf.opaque_pipeline
@@ -258,11 +255,10 @@ main :: proc() {
 
     // TODO: change this later...
     monkey_scene_graph := render.scene_graph_create()
-    monkey_node := render.MeshNode{
-        mesh = monkey_mesh[0],
+    monkey_node := render.SceneGraphNode{
         world_transform = linalg.matrix4_translate_f32({ 0, 0, 3 }),
         local_transform = 1,
-        get_render_object = render.mesh_asset_get_render_object,
+        data = render.MeshNodeData{ mesh = monkey_mesh }
     }
     monkey_scene_graph.root = (^render.SceneGraphNode)(&monkey_node)
     monkey_scene_graph.depth = 1
@@ -278,11 +274,10 @@ main :: proc() {
     defer render.mesh_destroy(&r, floor_mesh)
     for &surface in floor_mesh.surfaces do surface.material = &floor_material
     floor_scene_graph := render.scene_graph_create()
-    floor_node := render.MeshNode{
-        mesh = floor_mesh,
+    floor_node := render.SceneGraphNode{
         world_transform = linalg.matrix4_translate_f32({ 0, -2, 0 }) * linalg.matrix4_rotate_f32(-math.PI / 2, { 1, 0, 0 }),
         local_transform = 1,
-        get_render_object = render.mesh_asset_get_render_object,
+        data = render.MeshNodeData{ mesh = floor_mesh },
     }
     floor_scene_graph.root = (^render.SceneGraphNode)(&floor_node)
     floor_scene_graph.depth = 1

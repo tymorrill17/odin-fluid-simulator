@@ -29,14 +29,8 @@ CPUParticleSystem :: struct {
     material:                       ^MaterialInstance,  // Material pipeline to use for the rendered particles
 }
 
-ParticleNode :: struct {
-    using node:      SceneGraphNode,
-    particle_system: ^CPUParticleSystem,
-}
-
 particle_system_get_render_object :: proc(node: ^SceneGraphNode, render_object_list: ^[dynamic]RenderObject, transform: float4x4) {
-    node := (^ParticleNode)(node)
-    system := node.particle_system
+    system := node.data.(ParticleNodeData).particle_system
     append(render_object_list, RenderObject{
         index_count             = system.mesh.surfaces[0].count,
         first_index             = system.mesh.surfaces[0].start_index,
