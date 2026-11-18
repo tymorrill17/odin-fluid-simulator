@@ -1,10 +1,14 @@
 package render
 
 import vk "vendor:vulkan"
+import stbi "vendor:stb/image"
 import "vendor:cgltf"
 import "core:log"
 import "core:strings"
 import "core:math/linalg"
+import "core:encoding/base64"
+import "core:path/filepath"
+import "core:os"
 
 ASSET_DIR :: #config(ASSET_DIR, ".")
 
@@ -377,7 +381,46 @@ load_gltf :: proc(renderer: ^Renderer, filename: string) -> LoadedGLTF {
     gltf.images     = make([]Image, len(data.images))
 
     for image, i in data.images {
-        gltf.images[i] = g_error_texture.image
+        image_bytes: []byte
+
+        // Get (and decode) the encoded image bytes in whichever form they come in.
+        switch {
+        case image.buffer_view != nil:
+            view := image.buffer_view
+            if view.buffer == nil || view.buffer.data == nil do continue;
+            image_bytes = ([^]byte)(view.buffer.data)[view.offset:view.offset + view.size]
+
+        case image.uri != nil:
+            uri := string(image.uri)
+            if strings.has_prefix(uri, "data:") {
+                // The image data is encoded in the string
+                comma_index := strings.index_rune(uri, ',')
+                if comma_index < 0 do continue;
+                image_bytes = base64.decode(uri[comma_index + 1:], allocator = context.temp_allocator) or_continue
+            } else {
+                // The image data is in another file. Use stb to read it.
+                c_uri := strings.clone_to_cstring(uri, context.temp_allocator)
+                result := cgltf.decode_uri(transmute([^]byte)c_uri)
+                if result != 0 do continue
+                path := filepath.join({ ASSET_DIR, string(c_uri) }) or_continue
+                image_bytes = os.read_entire_file_from_path(path, context.temp_allocator) or_continue
+            }
+
+        case:
+            continue;
+        }
+
+        // Decode the bytes using stb
+        width, height, channels: i32
+        pixels := stbi.load_from_memory(raw_data(image_bytes), i32(len(image_bytes)), &width, &height, &channels, 4)
+        if pixels == nil {
+            log.warnf("Failed to decode gltf image: %s :: %s", image.name, stbi.failure_reason())
+            continue
+        }
+        defer stbi.image_free(pixels)
+
+        extent := vk.Extent3D{ u32(width), u32(height), 1 }
+        gltf.images[i] = image_create_from_data(renderer, pixels, extent, 0, .R8G8B8A8_UNORM, { .SAMPLED })
     }
 
     for material, i in data.materials {
@@ -582,7 +625,11 @@ loaded_gltf_destroy :: proc(renderer: ^Renderer, gltf: ^LoadedGLTF) {
 
     for sampler in gltf.samplers do vk.DestroySampler(renderer.logical_device, sampler, nil)
     delete(gltf.samplers)
-    delete(gltf.images) // images currently all alias g_error_texture, which is owned elsewhere
+    // Images that failed to load alias g_error_texture, which is owned globally, so skip those
+    for &image in gltf.images {
+        if image.handle != g_error_texture.handle do image_destroy(renderer, &image)
+    }
+    delete(gltf.images)
 
     gltf^ = {}
 }

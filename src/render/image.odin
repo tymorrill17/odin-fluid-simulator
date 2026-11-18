@@ -98,6 +98,15 @@ image_create :: proc(renderer: ^Renderer, extent: vk.Extent3D, format: vk.Format
     return new_image
 }
 
+image_create_from_data :: proc(renderer: ^Renderer, data: rawptr, extent: vk.Extent3D, sampler: vk.Sampler, format: vk.Format, usage: vk.ImageUsageFlags, use_mipmaps: bool = false) -> Image {
+    // TODO: generate mips. image_write_data only fills mip 0 for now
+    assert(!use_mipmaps, "texture_create_from_data does not generate mipmaps yet")
+
+    new_image := image_create(renderer, extent, format, usage, use_mipmaps)
+    image_write_data(renderer, &new_image, data)
+    return new_image
+}
+
 // Creates a device-only image that will be used for texture purposes
 texture_create :: proc(renderer: ^Renderer, extent: vk.Extent3D, sampler: vk.Sampler, format: vk.Format, usage: vk.ImageUsageFlags, use_mipmaps: bool = false) -> Texture {
     return Texture{
