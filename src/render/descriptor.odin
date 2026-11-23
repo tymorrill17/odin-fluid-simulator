@@ -127,7 +127,7 @@ DescriptorAllocator :: struct {
 
 @(private)
 descriptor_allocator_initialize :: proc(renderer: ^Renderer, initial_sets: uint, pool_size_ratios: []PoolSizeRatio, flags: vk.DescriptorPoolCreateFlags = {}) {
-    renderer.descriptor_allocator.pool_size_ratios  = make([dynamic]PoolSizeRatio, len(pool_size_ratios))
+    renderer.descriptor_allocator.pool_size_ratios  = make([dynamic]PoolSizeRatio, 0, len(pool_size_ratios))
     renderer.descriptor_allocator.full_pools        = make([dynamic]vk.DescriptorPool)
     renderer.descriptor_allocator.open_pools        = make([dynamic]vk.DescriptorPool)
 

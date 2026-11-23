@@ -381,14 +381,16 @@ load_gltf :: proc(renderer: ^Renderer, filename: string) -> LoadedGLTF {
     gltf.images     = make([]Image, len(data.images))
 
     // Image loading function
-    get_image_bytes :: proc(image: cgltf.image) -> ([]byte, bool) {
+    load_image_from_gltf :: proc(renderer: ^Renderer, image: cgltf.image) -> (Image, bool) {
         image_bytes: []byte
+        ok := true
+        need_cleanup := false // To free or not to free
 
         // Get the encoded image bytes in whichever form they come in.
         switch {
         case image.buffer_view != nil:
             view := image.buffer_view
-            if view.buffer == nil || view.buffer.data == nil do return nil, false
+            if view.buffer == nil || view.buffer.data == nil { ok = false; break }
             image_bytes = ([^]byte)(view.buffer.data)[view.offset:view.offset + view.size]
 
         case image.uri != nil:
@@ -396,35 +398,30 @@ load_gltf :: proc(renderer: ^Renderer, filename: string) -> LoadedGLTF {
             if strings.has_prefix(uri, "data:") {
                 // The image data is encoded in the string
                 comma_index := strings.index_rune(uri, ',')
-                if comma_index < 0 do return nil, false
+                if comma_index < 0 { ok = false; break }
                 decode_result: base64.Error
                 image_bytes, decode_result = base64.decode(uri[comma_index + 1:], allocator = context.allocator)
-                if decode_result != nil do return nil, false
+                if decode_result != nil { ok = false; break }
             } else {
                 // The image data is in another file. Load the entire thing into memory.
                 c_uri := strings.clone_to_cstring(uri, context.allocator)
                 defer delete(c_uri)
                 decode_result := cgltf.decode_uri(transmute([^]byte)c_uri)
-                if decode_result != 0 do return nil, false
+                if decode_result != 0 { ok = false; break }
                 path, join_result := filepath.join({ ASSET_DIR, string(c_uri) })
                 defer delete(path)
-                if join_result != nil do return nil, false
+                if join_result != nil { ok = false; break }
                 read_result: os.Error
                 image_bytes, read_result = os.read_entire_file_from_path(path, context.allocator)
-                if read_result != nil do return nil, false
+                if read_result != nil { ok = false; break }
             }
+            need_cleanup = true
 
         case:
-            return nil, false
+            ok = false
         }
 
-        return image_bytes, true
-    }
-
-    // Load in all the images
-    for image, i in data.images {
-        image_bytes, ok := get_image_bytes(image)
-        defer delete(image_bytes)
+        new_image: Image
         bytes_loaded: if ok {
             // Decode the bytes using stb. Feed in the raw data from memory
             width, height, channels: i32
@@ -435,14 +432,25 @@ load_gltf :: proc(renderer: ^Renderer, filename: string) -> LoadedGLTF {
                 break bytes_loaded
             } else {
                 extent := vk.Extent3D{ u32(width), u32(height), 1 }
-                gltf.images[i] = image_create_from_data(renderer, pixels, extent, 0, .R8G8B8A8_UNORM, { .SAMPLED })
+                new_image = image_create_from_data(renderer, pixels, extent, 0, .R8G8B8A8_UNORM, { .SAMPLED })
             }
         }
+
+        if need_cleanup do delete(image_bytes)
+
+        return new_image, ok
+    }
+
+    // Load in all the images
+    for image, i in data.images {
+        ok: bool
+        gltf.images[i], ok = load_image_from_gltf(renderer, image)
 
         if !ok {
             log.warnf("Failed to load image %d from the GLTF file: %s", i, filename)
             gltf.images[i] = g_error_texture.image
         }
+
     }
 
     for material, i in data.materials {
