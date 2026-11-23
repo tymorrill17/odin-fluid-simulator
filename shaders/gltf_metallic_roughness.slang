@@ -57,7 +57,7 @@ VSOutput vertex_main(uint vertex_id : SV_VertexID) {
 
 [shader("fragment")]
 float4 fragment_main(PSInput input) {
-    float light_value = max(dot(input.normal, scene_data.sunlight_dir.xyz), 0.1);
+    float light_value = max(dot(normalize(input.normal), normalize(scene_data.sunlight_dir.xyz)), 0.1);
     float3 color = input.color * color_texture.Sample(input.uv).xyz;
     float3 ambient = color * scene_data.ambient_color.xyz;
     return float4(light_value * scene_data.sunlight_color.w * color + ambient, 1.0);
