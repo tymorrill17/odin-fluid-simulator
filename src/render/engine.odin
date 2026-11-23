@@ -107,6 +107,7 @@ Renderer :: struct {
     current_swpch_render_sem:   ^vk.Semaphore,
 
     renderables:                [dynamic]RenderObject,
+    transparent_renderables:    [dynamic]RenderObject,
     compute_passes:             [dynamic]ComputePass,
     scene_descriptor:           DescriptorSet,
     scene_descriptor_layout:    vk.DescriptorSetLayout,
@@ -217,6 +218,7 @@ renderer_initialize :: proc(renderer: ^Renderer, renderer_cfg: RendererConfig) {
     renderer.scene_descriptor = descriptor_set_create(renderer, renderer.scene_descriptor_layout)
 
     renderer.renderables             = make([dynamic]RenderObject)
+    renderer.transparent_renderables = make([dynamic]RenderObject)
     renderer.compute_passes          = make([dynamic]ComputePass)
 
     renderer.render_scale = 1
@@ -249,6 +251,7 @@ renderer_shutdown :: proc(renderer: ^Renderer) {
     recorder_destroy(renderer, &renderer.recorder)
 
     delete(renderer.renderables)
+    delete(renderer.transparent_renderables)
     delete(renderer.compute_passes)
 
     descriptor_allocator_destroy(renderer)
@@ -423,8 +426,9 @@ draw :: proc(renderer: ^Renderer) {
 
     last_pipeline: Pipeline
     last_material: ^MaterialInstance
-    for render_object in renderer.renderables {
-        if render_object.material.pipeline != last_pipeline {
+
+    draw_render_object :: proc(renderer: ^Renderer, cmd: vk.CommandBuffer, render_object: ^RenderObject, last_material: ^^MaterialInstance, last_pipeline: ^Pipeline) {
+        if render_object.material.pipeline != last_pipeline^ {
             // Then we need to bind the new pipeline
             vk.CmdBindPipeline(cmd, render_object.material.pipeline.bind_point, render_object.material.pipeline.handle)
             // Also bind the global scene descriptor
@@ -432,15 +436,15 @@ draw :: proc(renderer: ^Renderer) {
             //       set layouts, we can just bind this once.
             descriptor_set_bind(cmd, render_object.material.pipeline.bind_point, render_object.material.pipeline.layout,
                 &renderer.scene_descriptor, 0, renderer.frame_index)
-            last_pipeline = render_object.material.pipeline
+            last_pipeline^ = render_object.material.pipeline
         }
-        if render_object.material != last_material {
+        if render_object.material != last_material^ {
             // Then we need to bind the new material descriptors (if they exist)
             if render_object.material.descriptor.handle != 0 {
                 descriptor_set_bind(cmd, render_object.material.pipeline.bind_point, render_object.material.pipeline.layout,
                     &render_object.material.descriptor, 1)
             }
-            last_material = render_object.material
+            last_material^ = render_object.material
         }
 
         vk.CmdBindIndexBuffer(cmd, render_object.index_buffer, 0, .UINT32)
@@ -451,6 +455,14 @@ draw :: proc(renderer: ^Renderer) {
         }
         vk.CmdPushConstants(cmd, render_object.material.pipeline.layout, render_object.material.pipeline.push_constant_stages, 0, size_of(push_constants), &push_constants)
         vk.CmdDrawIndexed(cmd, render_object.index_count, render_object.instance_count, render_object.first_index, 0, 0)
+    }
+
+    for &render_object in renderer.renderables {
+        draw_render_object(renderer, cmd, &render_object, &last_material, &last_pipeline)
+    }
+
+    for &render_object in renderer.transparent_renderables {
+        draw_render_object(renderer, cmd, &render_object, &last_material, &last_pipeline)
     }
 
     vk.CmdEndRendering(cmd)

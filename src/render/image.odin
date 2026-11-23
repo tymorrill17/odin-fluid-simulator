@@ -102,7 +102,7 @@ image_create_from_data :: proc(renderer: ^Renderer, data: rawptr, extent: vk.Ext
     // TODO: generate mips. image_write_data only fills mip 0 for now
     assert(!use_mipmaps, "texture_create_from_data does not generate mipmaps yet")
 
-    new_image := image_create(renderer, extent, format, usage, use_mipmaps)
+    new_image := image_create(renderer, extent, format, usage + { .TRANSFER_DST }, use_mipmaps)
     image_write_data(renderer, &new_image, data)
     return new_image
 }

@@ -380,14 +380,15 @@ load_gltf :: proc(renderer: ^Renderer, filename: string) -> LoadedGLTF {
     gltf.meshes     = make([]MeshAsset, len(data.meshes))
     gltf.images     = make([]Image, len(data.images))
 
-    for image, i in data.images {
+    // Image loading function
+    get_image_bytes :: proc(image: cgltf.image) -> ([]byte, bool) {
         image_bytes: []byte
 
-        // Get (and decode) the encoded image bytes in whichever form they come in.
+        // Get the encoded image bytes in whichever form they come in.
         switch {
         case image.buffer_view != nil:
             view := image.buffer_view
-            if view.buffer == nil || view.buffer.data == nil do continue;
+            if view.buffer == nil || view.buffer.data == nil do return nil, false
             image_bytes = ([^]byte)(view.buffer.data)[view.offset:view.offset + view.size]
 
         case image.uri != nil:
@@ -395,32 +396,53 @@ load_gltf :: proc(renderer: ^Renderer, filename: string) -> LoadedGLTF {
             if strings.has_prefix(uri, "data:") {
                 // The image data is encoded in the string
                 comma_index := strings.index_rune(uri, ',')
-                if comma_index < 0 do continue;
-                image_bytes = base64.decode(uri[comma_index + 1:], allocator = context.temp_allocator) or_continue
+                if comma_index < 0 do return nil, false
+                decode_result: base64.Error
+                image_bytes, decode_result = base64.decode(uri[comma_index + 1:], allocator = context.allocator)
+                if decode_result != nil do return nil, false
             } else {
-                // The image data is in another file. Use stb to read it.
-                c_uri := strings.clone_to_cstring(uri, context.temp_allocator)
-                result := cgltf.decode_uri(transmute([^]byte)c_uri)
-                if result != 0 do continue
-                path := filepath.join({ ASSET_DIR, string(c_uri) }) or_continue
-                image_bytes = os.read_entire_file_from_path(path, context.temp_allocator) or_continue
+                // The image data is in another file. Load the entire thing into memory.
+                c_uri := strings.clone_to_cstring(uri, context.allocator)
+                defer delete(c_uri)
+                decode_result := cgltf.decode_uri(transmute([^]byte)c_uri)
+                if decode_result != 0 do return nil, false
+                path, join_result := filepath.join({ ASSET_DIR, string(c_uri) })
+                defer delete(path)
+                if join_result != nil do return nil, false
+                read_result: os.Error
+                image_bytes, read_result = os.read_entire_file_from_path(path, context.allocator)
+                if read_result != nil do return nil, false
             }
 
         case:
-            continue;
+            return nil, false
         }
 
-        // Decode the bytes using stb
-        width, height, channels: i32
-        pixels := stbi.load_from_memory(raw_data(image_bytes), i32(len(image_bytes)), &width, &height, &channels, 4)
-        if pixels == nil {
-            log.warnf("Failed to decode gltf image: %s :: %s", image.name, stbi.failure_reason())
-            continue
-        }
-        defer stbi.image_free(pixels)
+        return image_bytes, true
+    }
 
-        extent := vk.Extent3D{ u32(width), u32(height), 1 }
-        gltf.images[i] = image_create_from_data(renderer, pixels, extent, 0, .R8G8B8A8_UNORM, { .SAMPLED })
+    // Load in all the images
+    for image, i in data.images {
+        image_bytes, ok := get_image_bytes(image)
+        defer delete(image_bytes)
+        bytes_loaded: if ok {
+            // Decode the bytes using stb. Feed in the raw data from memory
+            width, height, channels: i32
+            pixels := stbi.load_from_memory(raw_data(image_bytes), i32(len(image_bytes)), &width, &height, &channels, 4)
+            defer stbi.image_free(pixels)
+            if pixels == nil {
+                ok = false
+                break bytes_loaded
+            } else {
+                extent := vk.Extent3D{ u32(width), u32(height), 1 }
+                gltf.images[i] = image_create_from_data(renderer, pixels, extent, 0, .R8G8B8A8_UNORM, { .SAMPLED })
+            }
+        }
+
+        if !ok {
+            log.warnf("Failed to load image %d from the GLTF file: %s", i, filename)
+            gltf.images[i] = g_error_texture.image
+        }
     }
 
     for material, i in data.materials {
