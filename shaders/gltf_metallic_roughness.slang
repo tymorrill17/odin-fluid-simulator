@@ -9,12 +9,17 @@ struct MeshVertex
 struct SceneDataGLTF {
     float4x4 view;
     float4x4 proj;
+    float4   camera_position;
+
     float4   ambient_color;
     float4   sunlight_dir;
     float4   sunlight_color;
+
     float4*  light_positions;
     float4*  light_colors;
     int      light_count;
+    float    exposure;
+    float    gamma;
 };
 
 struct MaterialDataGLTF {
@@ -32,13 +37,11 @@ DrawPushConstants push_constants;
 
 [[vk::binding(0, 0)]]
 ConstantBuffer<SceneDataGLTF> scene_data;
-
 [[vk::binding(0, 1)]]
 ConstantBuffer<MaterialDataGLTF> material_data;
 
 [[vk::binding(1, 1)]]
 Sampler2D color_texture;
-
 [[vk::binding(2, 1)]]
 Sampler2D metal_rough_texture;
 

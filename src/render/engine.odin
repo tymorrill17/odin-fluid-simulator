@@ -51,10 +51,17 @@ DrawPushConstants :: struct {
 }
 
 SceneData :: struct {
-    using camera_data:  CameraData,
-    ambient_color:      float4,
-    sunlight_dir:       float4,
-    sunlight_color:     float4,
+    using camera_data: CameraData,
+
+    ambient_color:     float4,
+    sunlight_dir:      float4,
+    sunlight_color:    float4,
+
+    light_positions:   ^float4,
+    light_colors:      ^float4,
+    light_count:       int,
+    exposure:          f32,
+    gamma:             f32,
 }
 
 RendererConfig :: struct {

@@ -16,8 +16,9 @@ CameraConfig :: struct{
 };
 
 CameraData :: struct {
-    view:       float4x4,
-    proj:       float4x4,
+    view:            float4x4,
+    proj:            float4x4,
+    camera_position: float4,
 };
 
 CameraController :: struct {

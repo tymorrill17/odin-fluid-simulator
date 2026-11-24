@@ -5,7 +5,6 @@ import vk "vendor:vulkan"
 import "render"
 import "core:log"
 import "core:math"
-import "core:math/linalg"
 import "core:path/filepath"
 import "core:time"
 
@@ -115,7 +114,6 @@ main :: proc() {
     global_scene_buffer := render.buffer_create(&r, size_of(render.SceneData), u64(r.frames_in_flight), { .UNIFORM_BUFFER }, .CPU_WRITE)
     defer render.buffer_destroy(&r, &global_scene_buffer)
     global_scene_data := render.SceneData{
-        viewproj        = (1), // initialize to identity matrix
         view            = (1),
         proj            = (1),
         ambient_color   = { 1,  1, 1, 1 },
@@ -161,19 +159,19 @@ main :: proc() {
     bounding_box.max = { boundary_config.width, boundary_config.height, boundary_config.depth } * 0.5
     bounding_box.min = -bounding_box.max
 
-    fluidsim_particle_system := render.particle_system_create(&r, MAX_PARTICLES, particle_mesh, &fluid_material)
-    // Dimension of the particle motion is inferred from bounding box dimension
-    fluidsim_particle_system.motion = fluidsim_state_create(&fluidsim_particle_system, &particle_config, &physics_config, &bounding_box)
-    defer render.particle_system_destroy(&fluidsim_particle_system, &r)
+    // fluidsim_particle_system := render.particle_system_create(&r, MAX_PARTICLES, particle_mesh, &fluid_material)
+    // // Dimension of the particle motion is inferred from bounding box dimension
+    // fluidsim_particle_system.motion = fluidsim_state_create(&fluidsim_particle_system, &particle_config, &physics_config, &bounding_box)
+    // defer render.particle_system_destroy(&fluidsim_particle_system, &r)
 
-    // TODO: change this later...
-    fluidsim_particle_scene_graph := render.scene_graph_create()
-    fluidsim_node := render.SceneGraphNode{
-        world_transform = 1,
-        local_transform = 1,
-        data = render.ParticleNodeData{ particle_system = &fluidsim_particle_system },
-    }
-    fluidsim_particle_scene_graph.root = &fluidsim_node
+    // // TODO: change this later...
+    // fluidsim_particle_scene_graph := render.scene_graph_create()
+    // fluidsim_node := render.SceneGraphNode{
+    //     world_transform = 1,
+    //     local_transform = 1,
+    //     data = render.ParticleNodeData{ particle_system = &fluidsim_particle_system },
+    // }
+    // fluidsim_particle_scene_graph.root = &fluidsim_node
 
     r.background_type = .FragmentShader
     r.background_material = get_sky_material(&r, r.scene_descriptor_layout, &r.scene_descriptor)
@@ -234,31 +232,14 @@ main :: proc() {
     render.descriptor_writer_update_sets(&r.descriptor_writer, &r)
 
     // Load the example gltf files
-    monkey_filepath, _ := filepath.join({render.ASSET_DIR, "monkey.glb"}, context.allocator)
-    defer delete(monkey_filepath)
-    monkey_gltf := render.load_gltf(&r, monkey_filepath)
-    defer render.loaded_gltf_destroy(&r, &monkey_gltf)
-
-    monkey_gltf.scene_graph.root.local_transform = linalg.matrix4_translate_f32({ 0, 0, 3 })
-    render.scene_node_update_transforms(monkey_gltf.scene_graph.root, 1) // Must propagate the local transform change to the children
+    sponza_filepath, _ := filepath.join({render.ASSET_DIR, "sponza-png.glb"}, context.allocator)
+    defer delete(sponza_filepath)
+    sponza_gltf := render.load_gltf(&r, sponza_filepath)
+    defer render.loaded_gltf_destroy(&r, &sponza_gltf)
 
     // TODO: change this later...
     gltf_grey := render.material_metallic_roughness_create(&r)
     defer render.material_metallic_roughness_destroy(&gltf_grey, &r)
-    floor_material: render.MaterialMetallicRoughnessInstanceGLTF
-    floor_material = render.material_metallic_roughness_instance_create(&r, gltf_grey, grey_texture, grey_texture,
-        { 1, 1, 1, 1 }, { 1, 1, 0, 0 }, .opaque)
-    defer render.material_metallic_roughness_instance_destroy(&floor_material, &r)
-    floor_mesh := render.mesh_create_rectangle(&r, 10, 10)
-    defer render.mesh_destroy(&r, floor_mesh)
-    for &surface in floor_mesh.surfaces do surface.material = &floor_material.instance
-    floor_scene_graph := render.scene_graph_create()
-    floor_node := render.SceneGraphNode{
-        world_transform = linalg.matrix4_translate_f32({ 0, -2, 0 }) * linalg.matrix4_rotate_f32(-math.PI / 2, { 1, 0, 0 }),
-        local_transform = 1,
-        data = render.MeshNodeData{ mesh = floor_mesh },
-    }
-    floor_scene_graph.root = &floor_node
 
     recording_timer := render.timer_create()
     for !render.window_should_close(&r) {
@@ -267,7 +248,7 @@ main :: proc() {
 
         render.start_frame(&r)
         process_renderer_inputs(&r.input_manager, &r)
-        process_fluid_sim_inputs(&r.input_manager, &fluidsim_particle_system)
+        // process_fluid_sim_inputs(&r.input_manager, &fluidsim_particle_system)
         process_camera_inputs(&r.input_manager, &camera_controller)
 
         render.camera_update(&camera_controller, r.frame_time)
@@ -277,9 +258,9 @@ main :: proc() {
         if imgui.Begin("Fluid Simulator") {
             imgui.Text("FPS: %f", r.timer.fps)
             imgui.Text("Frame Time: %f", r.timer.avg_frame_time)
-            if imgui.Button("Start") do fluidsim_particle_system.motion.started = true
+            // if imgui.Button("Start") do fluidsim_particle_system.motion.started = true
             imgui.SameLine()
-            if imgui.Button("Reset") do fluidsim_particle_system.motion.started = false
+            // if imgui.Button("Reset") do fluidsim_particle_system.motion.started = false
 
             if imgui.CollapsingHeader("Physics") {
                 imgui.DragFloat("Gravity", &physics_config.gravity, 0.01);
@@ -349,22 +330,20 @@ main :: proc() {
         up := render.float3{ 0, 1, 0 }
         global_scene_data.proj = render.projection_set_perspective(camera_config.fov, aspect_ratio, camera_config.near_plane, camera_config.far_plane)
         global_scene_data.view = render.view_set_direction(camera_controller.position, camera_controller.forward, render.g_world_up)
-        global_scene_data.viewproj = global_scene_data.proj * global_scene_data.view
 
         // default lighting parameters
         global_scene_data.ambient_color = .1
         global_scene_data.sunlight_color = 1
-        global_scene_data.sunlight_dir = { 0, 1, 0.5, 1 }
+        global_scene_data.sunlight_dir = { 0.5, 1, 0.3, 1 }
 
         render.buffer_write_data_at_index(&r, &global_scene_buffer, rawptr(&global_scene_data), r.frame_index) // Update at the right index for this frame
 
         // Update fluidsim particles.
-        render.particle_system_update(&fluidsim_particle_system, &r, r.frame_time)
+        // render.particle_system_update(&fluidsim_particle_system, &r, r.frame_time)
 
         // Get the renderables
-        render.scene_graph_get_render_objects(&fluidsim_particle_scene_graph, &r.renderables)
-        render.scene_graph_get_render_objects(&monkey_gltf.scene_graph, &r.renderables)
-        render.scene_graph_get_render_objects(&floor_scene_graph, &r.renderables)
+        // render.scene_graph_get_render_objects(&fluidsim_particle_scene_graph, &r.renderables)
+        render.scene_graph_get_render_objects(&sponza_gltf.scene_graph, &r.renderables)
 
         render.draw(&r)
     }
