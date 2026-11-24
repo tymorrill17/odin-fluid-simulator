@@ -51,8 +51,7 @@ MaterialMetallicRoughnessInstanceGLTF :: struct {
     using instance: MaterialInstance,
     constants: struct {
         color_factors:          float4,
-        metal_rough_factors:    float4,
-        extra_padding:          [14]float4,
+        metal_rough_factors:    float2,
     },
 
     resources: struct {
@@ -118,7 +117,7 @@ SceneGraphNode :: struct {
 
 
 material_metallic_roughness_instance_create :: proc(renderer: ^Renderer, gltf: MaterialMetallicRoughnessGLTF,
-    color_texture, metal_rough_texture: Texture, color_factors, metal_rough_factors: [4]f32,
+    color_texture, metal_rough_texture: Texture, color_factors: float4, metal_rough_factors: float2,
     pass_type: MaterialPass) -> MaterialMetallicRoughnessInstanceGLTF {
 
     material: MaterialMetallicRoughnessInstanceGLTF
@@ -475,14 +474,14 @@ load_gltf :: proc(renderer: ^Renderer, filename: string) -> LoadedGLTF {
         }
 
         gltf.materials[i] = material_metallic_roughness_instance_create(renderer, gltf.material_info, color_texture, metal_rough_texture,
-            material.pbr_metallic_roughness.base_color_factor, float4{material.pbr_metallic_roughness.metallic_factor, material.pbr_metallic_roughness.roughness_factor, 0, 0},
+            material.pbr_metallic_roughness.base_color_factor, float2{material.pbr_metallic_roughness.metallic_factor, material.pbr_metallic_roughness.roughness_factor},
             pass_type)
     }
 
     // Create default material (glTF spec says: white, metallic 1, roughness 1)
     default_material := &gltf.materials[len(data.materials)]
     default_material^ = material_metallic_roughness_instance_create(renderer, gltf.material_info,
-        g_white_texture, g_white_texture, { 1, 1, 1, 1 }, { 1, 1, 0, 0 }, .opaque)
+        g_white_texture, g_white_texture, { 1, 1, 1, 1 }, { 1, 1 }, .opaque)
 
 
     // Now we load in all the meshes and store them in the mesh array

@@ -88,14 +88,3 @@ input_update :: proc(input: ^InputManager, renderer: ^Renderer) {
     }
 }
 
-// Project the cursor into world space using the inverse viewproj matrix
-// mouse_world_position :: proc(input: ^InputManager, inv_viewproj: float4x4, ndc_depth: f32 = 0) -> float3 {
-//     clip  := float4{ input.mouse_ndc.x, input.mouse_ndc.y, ndc_depth, 1 }
-//     world := inv_viewproj * clip
-//     if world.w != 0 do world /= world.w
-//     return world.xyz
-// }
-//
-// mouse_world_position_from_viewproj :: proc(input: ^InputManager, viewproj: float4x4, ndc_depth: f32 = 0) -> float3 {
-//     return mouse_world_position(input, linalg.inverse(viewproj), ndc_depth)
-// }

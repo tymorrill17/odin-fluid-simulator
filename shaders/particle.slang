@@ -1,4 +1,17 @@
-import "modules/common_types";
+
+struct MeshVertex
+{
+    float3 position;
+    float  uv_x;
+    float3 normal;
+    float  uv_y;
+    float4 color;
+};
+
+struct GlobalSceneData {
+    float4x4 view;
+    float4x4 proj;
+};
 
 struct ParticleInstance {
     float3 position;
@@ -39,7 +52,7 @@ VSOutput billboard(uint vertex_id : SV_VertexID, uint instance_id : SV_InstanceI
     float3 particle_world_pos = mul(push_constants.world_matrix, float4(particle.position, 1.0)).xyz;
     float3 world_pos = particle_world_pos + (vertex.position.x * right + vertex.position.y * up) * particle.size;
 
-    output.position = mul(g_scene.viewproj, float4(world_pos, 1.0));
+    output.position = mul(g_scene.proj, mul(g_scene.view, float4(world_pos, 1.0)));
     output.pixel_color = vertex.color * particle.color;
     output.local_position = float2(vertex.uv_x, vertex.uv_y) * 2.0 - 1.0;
 
