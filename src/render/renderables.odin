@@ -87,10 +87,9 @@ MeshAsset :: struct {
 
 MeshVertex :: struct {
     position:   float3,
-    uv_x:       f32,
     normal:     float3,
-    uv_y:       f32,
     color:      float4,
+    uv:         float2,
 };
 
 MeshNodeData     :: struct { mesh: ^MeshAsset }
@@ -274,10 +273,10 @@ mesh_create_rectangle :: proc(renderer: ^Renderer, width, height: f32) -> ^MeshA
     half_x_len := width / 2
     half_y_len := height / 2
     vertices := []MeshVertex{
-        { position = {-half_x_len, -half_y_len, 0}, uv_x = 0, normal = {0, 0, 1}, uv_y = 0, color = {1, 1, 1, 1} }, // bottom-left
-        { position = { half_x_len, -half_y_len, 0}, uv_x = 1, normal = {0, 0, 1}, uv_y = 0, color = {1, 1, 1, 1} }, // bottom-right
-        { position = { half_x_len,  half_y_len, 0}, uv_x = 1, normal = {0, 0, 1}, uv_y = 1, color = {1, 1, 1, 1} }, // top-right
-        { position = {-half_x_len,  half_y_len, 0}, uv_x = 0, normal = {0, 0, 1}, uv_y = 1, color = {1, 1, 1, 1} }, // top-left
+        { position = {-half_x_len, -half_y_len, 0}, normal = {0, 0, 1}, color = {1, 1, 1, 1}, uv = { 0, 0 } }, // bottom-left
+        { position = { half_x_len, -half_y_len, 0}, normal = {0, 0, 1}, color = {1, 1, 1, 1}, uv = { 1, 0 } }, // bottom-right
+        { position = { half_x_len,  half_y_len, 0}, normal = {0, 0, 1}, color = {1, 1, 1, 1}, uv = { 1, 1 } }, // top-right
+        { position = {-half_x_len,  half_y_len, 0}, normal = {0, 0, 1}, color = {1, 1, 1, 1}, uv = { 0, 1 } }, // top-left
     }
     indices := []u32{
         0, 1, 2,
@@ -536,8 +535,7 @@ load_gltf :: proc(renderer: ^Renderer, filename: string) -> LoadedGLTF {
                     position = 0,
                     normal = { 1, 0, 0},
                     color = 1,
-                    uv_x = 0,
-                    uv_y = 0,
+                    uv = { 0, 0 },
                 }
                 if !cgltf.accessor_read_float(vertexpos_accessor, i, &vertex.position[0], 3) do log.panic("Failed to read vertex pos")
                 append(&vertices, vertex)
@@ -555,8 +553,7 @@ load_gltf :: proc(renderer: ^Renderer, filename: string) -> LoadedGLTF {
                 for i in 0..<uv_accessor.count {
                     uv: float2
                     if !cgltf.accessor_read_float(uv_accessor, i, &uv[0], 2) do log.panic("Failed to read vertex uv")
-                    vertices[i + first_vertex].uv_x = uv.x
-                    vertices[i + first_vertex].uv_y = uv.y
+                    vertices[i + first_vertex].uv = uv
                 }
             }
 

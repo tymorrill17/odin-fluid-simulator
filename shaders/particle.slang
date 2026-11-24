@@ -2,10 +2,9 @@
 struct MeshVertex
 {
     float3 position;
-    float  uv_x;
     float3 normal;
-    float  uv_y;
     float4 color;
+    float2 uv;
 };
 
 struct GlobalSceneData {
@@ -54,7 +53,7 @@ VSOutput billboard(uint vertex_id : SV_VertexID, uint instance_id : SV_InstanceI
 
     output.position = mul(g_scene.proj, mul(g_scene.view, float4(world_pos, 1.0)));
     output.pixel_color = vertex.color * particle.color;
-    output.local_position = float2(vertex.uv_x, vertex.uv_y) * 2.0 - 1.0;
+    output.local_position = float2(vertex.uv.x, vertex.uv.y) * 2.0 - 1.0;
 
     return output;
 }

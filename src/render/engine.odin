@@ -31,6 +31,7 @@ device_features_11 := vk.PhysicalDeviceVulkan11Features{ sType = .PHYSICAL_DEVIC
 device_features_12 := vk.PhysicalDeviceVulkan12Features{ sType = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
     descriptorIndexing  = true,
     bufferDeviceAddress = true,
+    scalarBlockLayout   = true,
 }
 device_features_13 := vk.PhysicalDeviceVulkan13Features{ sType = .PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
     synchronization2                = true,

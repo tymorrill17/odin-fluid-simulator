@@ -1,18 +1,20 @@
 struct MeshVertex
 {
     float3 position;
-    float  uv_x;
     float3 normal;
-    float  uv_y;
     float4 color;
+    float2 uv;
 };
 
 struct SceneDataGLTF {
     float4x4 view;
     float4x4 proj;
-    float4 ambient_color;
-    float4 sunlight_dir;
-    float4 sunlight_color;
+    float4   ambient_color;
+    float4   sunlight_dir;
+    float4   sunlight_color;
+    float4*  light_positions;
+    float4*  light_colors;
+    int      light_count;
 };
 
 struct MaterialDataGLTF {
@@ -58,8 +60,8 @@ VSOutput vertex_main(uint vertex_id : SV_VertexID) {
     output.position = mul(scene_data.proj, mul(scene_data.view, mul(push_constants.world_matrix, float4(vertex.position, 1))));
     output.normal = mul(push_constants.world_matrix, float4(vertex.normal, 0)).xyz;
     output.color = vertex.color.xyz * material_data.color_factors.xyz;
-    output.uv.x = vertex.uv_x;
-    output.uv.y = vertex.uv_y;
+    output.uv.x = vertex.uv.x;
+    output.uv.y = vertex.uv.y;
     return output;
 }
 
